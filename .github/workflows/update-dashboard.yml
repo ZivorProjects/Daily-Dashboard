@@ -1,10 +1,13 @@
 name: Update Zivor Dashboard
 
 on:
-  # 6:00 AM AEDT daily (UTC+11 = 19:00 UTC)
-  # Note: during AEST (Apr-Oct, UTC+10) this fires at 5:00 AM local time
+  # 6:00 AM AEDT (UTC+11) — October through March
+  # 6:00 AM AEST (UTC+10) — April through September
+  # Each cron only fires during its season so the workflow runs exactly once per day at 6 AM local time.
+  # Note: during the DST switch weeks (early Apr / early Oct) it may be 1 hour off for a few days.
   schedule:
-    - cron: '0 19 * * *'
+    - cron: '0 19 * 10,11,12,1,2,3 *'   # Oct-Mar: 19:00 UTC = 6 AM AEDT (UTC+11)
+    - cron: '0 20 * 4,5,6,7,8,9 *'       # Apr-Sep: 20:00 UTC = 6 AM AEST (UTC+10)
   # Allow manual trigger from GitHub Actions tab
   workflow_dispatch:
 
