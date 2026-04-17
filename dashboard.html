@@ -1,0 +1,1275 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>D-Flector / Zivor — Daily Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f6fa;
+  --card: #ffffff;
+  --card-hover: #fafbfd;
+  --border: #e2e5f0;
+  --text: #1e2235;
+  --text-dim: #6b7194;
+  --accent: #3b6cf5;
+  --accent-light: rgba(59,108,245,.08);
+  --green: #16a34a;
+  --green-bg: rgba(22,163,74,.08);
+  --red: #dc2626;
+  --red-bg: rgba(220,38,38,.08);
+  --orange: #d97706;
+  --orange-bg: rgba(217,119,6,.08);
+  --purple: #7c3aed;
+  --purple-bg: rgba(124,58,237,.08);
+  --shadow: 0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+  --shadow-lg: 0 4px 12px rgba(0,0,0,.08);
+  --radius: 14px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background:var(--bg);
+  color:var(--text);
+  font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ─── Header ─── */
+.header {
+  background:#fff;
+  border-bottom:1px solid var(--border);
+  padding:18px 32px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  box-shadow:var(--shadow);
+  position:sticky; top:0; z-index:50;
+}
+.header-left { display:flex; align-items:center; gap:14px; }
+.header-logo {
+  width:36px; height:36px;
+  background:var(--accent);
+  border-radius:10px;
+  display:flex; align-items:center; justify-content:center;
+  font-weight:700; font-size:14px; color:#fff;
+  letter-spacing:-0.5px;
+}
+.header h1 { font-size:18px; font-weight:700; color:var(--text); }
+.header h1 span { color:var(--accent); }
+.header-right { display:flex; gap:16px; align-items:center; }
+.header .meta-item { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-dim); }
+.header .meta-item strong { color:var(--text); font-weight:600; }
+.status-badge {
+  display:inline-flex; align-items:center; gap:5px;
+  background:var(--green-bg); color:var(--green);
+  padding:4px 12px; border-radius:20px;
+  font-size:11px; font-weight:600; letter-spacing:.3px;
+}
+.status-badge::before {
+  content:''; width:7px; height:7px; border-radius:50%;
+  background:var(--green);
+  animation:pulse 2s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ─── Layout ─── */
+.container { max-width:1440px; margin:0 auto; padding:24px 28px 40px; }
+.grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:20px; }
+.grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:20px; margin-bottom:20px; }
+.grid-4 { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:24px; }
+.full { grid-column:1/-1; }
+
+/* ─── Cards ─── */
+.card {
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:22px;
+  box-shadow:var(--shadow);
+  transition:box-shadow .2s, transform .2s;
+}
+.card:hover { box-shadow:var(--shadow-lg); transform:translateY(-1px); }
+.card-title {
+  font-size:12px; font-weight:600;
+  color:var(--text-dim);
+  text-transform:uppercase; letter-spacing:.6px;
+  margin-bottom:18px;
+  display:flex; justify-content:space-between; align-items:center;
+}
+.card-title .pill {
+  font-size:11px; padding:3px 10px;
+  border-radius:8px;
+  background:var(--accent-light); color:var(--accent);
+  text-transform:none; letter-spacing:0; font-weight:600;
+}
+
+/* ─── Hero Cards ─── */
+.hero-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:20px; }
+.hero-card { position:relative; overflow:hidden; padding:28px 28px 24px; }
+.hero-card::after {
+  content:''; position:absolute; top:-30px; right:-30px;
+  width:140px; height:140px; border-radius:50%;
+  opacity:.06;
+}
+.hero-dflector::after { background:var(--green); }
+.hero-retail::after  { background:var(--accent); }
+.hero-card .hero-icon {
+  width:44px; height:44px; border-radius:12px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:20px; margin-bottom:16px;
+}
+.hero-dflector .hero-icon { background:var(--green-bg); }
+.hero-retail  .hero-icon { background:var(--accent-light); }
+.hero-card .hero-label { font-size:12px; font-weight:600; color:var(--text-dim); text-transform:uppercase; letter-spacing:.6px; margin-bottom:8px; }
+.hero-card .hero-value { font-size:38px; font-weight:800; letter-spacing:-1px; line-height:1; margin-bottom:10px; }
+.hero-dflector .hero-value { color:var(--green); }
+.hero-retail  .hero-value { color:var(--accent); }
+.hero-card .hero-meta { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+.hero-card .hero-sub { font-size:12px; color:var(--text-dim); }
+.hero-card .hero-sub strong { color:var(--text); font-weight:600; }
+.hero-card .hero-badge {
+  display:inline-flex; align-items:center; gap:4px;
+  font-size:12px; font-weight:600; padding:4px 12px; border-radius:20px;
+}
+.hero-dflector .hero-badge { background:var(--green-bg); color:var(--green); }
+.hero-retail  .hero-badge  { background:var(--accent-light); color:var(--accent); }
+.hero-card .hero-breakdown { margin-top:16px; padding-top:16px; border-top:1px solid var(--border); display:flex; gap:20px; flex-wrap:wrap; }
+.hero-card .hero-breakdown-item { display:flex; flex-direction:column; gap:3px; }
+.hero-card .hero-breakdown-item .bd-label { font-size:11px; color:var(--text-dim); font-weight:500; }
+.hero-card .hero-breakdown-item .bd-value { font-size:15px; font-weight:700; color:var(--text); }
+
+/* ─── Store Cards Grid ─── */
+.store-cards-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:20px; }
+.store-card { padding:18px 20px; position:relative; overflow:hidden; }
+.store-card .sc-name { font-size:13px; font-weight:700; color:var(--text); margin-bottom:4px; }
+.store-card .sc-source { font-size:10px; font-weight:500; text-transform:uppercase; letter-spacing:.5px; padding:2px 7px; border-radius:6px; display:inline-block; margin-bottom:12px; }
+.sc-source.src-neto    { background:rgba(59,108,245,.1);  color:var(--accent); }
+.sc-source.src-shopify { background:rgba(124,58,237,.1);  color:var(--purple); }
+.sc-source.src-trademe { background:rgba(8,145,178,.1);   color:var(--teal,#0891b2); }
+.store-card .sc-value  { font-size:22px; font-weight:800; color:var(--text); margin-bottom:2px; }
+.store-card .sc-target { font-size:11px; color:var(--text-dim); margin-bottom:10px; }
+.store-card .sc-bar-wrap { height:6px; background:var(--bg); border-radius:4px; overflow:hidden; margin-bottom:8px; border:1px solid var(--border); }
+.store-card .sc-bar { height:100%; border-radius:4px; transition:width .8s cubic-bezier(.4,0,.2,1); }
+.store-card .sc-footer { display:flex; justify-content:space-between; align-items:center; }
+.store-card .sc-pct { font-size:12px; font-weight:700; }
+.sc-pct.over    { color:var(--green); }
+.sc-pct.on-track { color:var(--accent); }
+.sc-pct.behind  { color:var(--orange); }
+.sc-pct.critical { color:var(--red); }
+
+/* ─── KPI Cards (legacy, kept for compat) ─── */
+.kpi { text-align:center; position:relative; overflow:hidden; }
+.kpi::before {
+  content:''; position:absolute; top:0; left:0; right:0; height:3px;
+  border-radius:var(--radius) var(--radius) 0 0;
+}
+.kpi:nth-child(1)::before { background:var(--accent); }
+.kpi:nth-child(2)::before { background:var(--green); }
+.kpi:nth-child(3)::before { background:var(--orange); }
+.kpi:nth-child(4)::before { background:var(--purple); }
+.kpi .label { font-size:11px; color:var(--text-dim); font-weight:500; text-transform:uppercase; letter-spacing:.5px; margin-top:6px; }
+.kpi .value { font-size:26px; font-weight:700; margin:10px 0 6px; color:var(--text); }
+.kpi .sub-label { font-size:11px; color:var(--text-dim); margin-bottom:4px; }
+.kpi .change { font-size:12px; font-weight:600; display:inline-flex; align-items:center; gap:3px; padding:3px 10px; border-radius:20px; }
+.kpi .change.up { color:var(--green); background:var(--green-bg); }
+.kpi .change.down { color:var(--red); background:var(--red-bg); }
+
+/* ─── Progress Bars ─── */
+.progress-row { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.progress-row .store-name { width:140px; font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--text); }
+.progress-row .bar-wrap { flex:1; height:26px; background:var(--bg); border-radius:8px; overflow:hidden; position:relative; border:1px solid var(--border); }
+.progress-row .bar {
+  height:100%; border-radius:7px;
+  transition:width .8s cubic-bezier(.4,0,.2,1);
+  display:flex; align-items:center; justify-content:flex-end;
+  padding-right:10px; font-size:11px; font-weight:600; color:#fff;
+  min-width:50px; text-shadow:0 1px 2px rgba(0,0,0,.15);
+}
+.progress-row .target { font-size:12px; color:var(--text-dim); width:90px; text-align:right; font-weight:500; }
+.progress-row .pct-label { font-size:11px; font-weight:600; width:48px; text-align:right; }
+.progress-row .pct-label.on-track { color:var(--green); }
+.progress-row .pct-label.behind { color:var(--orange); }
+.progress-row .pct-label.over { color:var(--accent); }
+
+/* ─── Tables ─── */
+.tbl { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }
+.tbl th {
+  text-align:left; padding:10px 14px;
+  border-bottom:2px solid var(--border);
+  color:var(--text-dim); font-weight:600; font-size:11px;
+  text-transform:uppercase; letter-spacing:.4px;
+  background:#fafbfd;
+}
+.tbl th:first-child { border-radius:8px 0 0 0; }
+.tbl th:last-child { border-radius:0 8px 0 0; }
+.tbl td { padding:11px 14px; border-bottom:1px solid var(--border); }
+.tbl tr:last-child td { border-bottom:none; }
+.tbl tr:hover td { background:rgba(59,108,245,.02); }
+.tbl .num { text-align:right; font-variant-numeric:tabular-nums; font-weight:500; }
+.tbl .positive { color:var(--green); }
+.tbl .negative { color:var(--red); }
+
+/* ─── Status Dots ─── */
+.status-dot { width:10px; height:10px; border-radius:50%; display:inline-block; box-shadow:0 0 0 3px; }
+.status-dot.excellent { background:var(--green); box-shadow:0 0 0 3px var(--green-bg); }
+.status-dot.good { background:var(--accent); box-shadow:0 0 0 3px var(--accent-light); }
+.status-dot.warning { background:var(--orange); box-shadow:0 0 0 3px var(--orange-bg); }
+.status-dot.critical { background:var(--red); box-shadow:0 0 0 3px var(--red-bg); }
+
+/* ─── Tabs ─── */
+.tabs { display:flex; gap:4px; }
+.tab {
+  padding:5px 14px; border-radius:8px; font-size:12px; font-weight:500;
+  cursor:pointer; border:1px solid var(--border);
+  color:var(--text-dim); background:#fff; transition:all .2s;
+}
+.tab:hover { color:var(--text); background:var(--bg); }
+.tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+
+/* ─── Chart Containers ─── */
+.chart-wrap { position:relative; width:100%; height:280px; }
+.chart-wrap canvas { width:100%!important; height:100%!important; }
+
+/* ─── Data Source Labels ─── */
+.data-src {
+  font-size:10px; color:var(--text-dim); opacity:.5;
+  margin-top:12px; font-style:italic;
+  padding-top:8px; border-top:1px solid var(--border);
+}
+
+/* ─── Section Titles ─── */
+.section-title {
+  font-size:15px; font-weight:700; color:var(--text);
+  margin:32px 0 16px; padding-left:4px;
+  display:flex; align-items:center; gap:10px;
+}
+.section-title::before {
+  content:''; width:4px; height:20px;
+  background:var(--accent); border-radius:2px;
+}
+.section-subtitle {
+  font-size:11px; color:var(--text-dim); font-weight:500;
+  letter-spacing:.3px;
+}
+
+/* ─── Trend Indicator ─── */
+.trend { font-size:11px; font-weight:600; display:inline-flex; align-items:center; gap:2px; }
+.trend.up { color:var(--green); }
+.trend.down { color:var(--red); }
+.trend.flat { color:var(--text-dim); }
+
+/* ─── Responsive ─── */
+@media(max-width:1024px){
+  .grid-2,.grid-3,.grid-4,.hero-grid { grid-template-columns:1fr; }
+  .store-cards-grid { grid-template-columns:repeat(2,1fr); }
+  .header { flex-direction:column; gap:12px; align-items:flex-start; }
+}
+@media(max-width:768px){
+  .container { padding:12px; }
+  .kpi .value { font-size:20px; }
+  .hero-card .hero-value { font-size:28px; }
+  .store-cards-grid { grid-template-columns:1fr; }
+}
+
+/* ─── Footer ─── */
+.footer {
+  text-align:center; padding:16px; margin-top:20px;
+  font-size:11px; color:var(--text-dim); opacity:.6;
+  border-top:1px solid var(--border);
+}
+
+/* ─── Page-Level Tab Navigation ─── */
+.page-tabs-nav {
+  background:#fff;
+  border-bottom:1px solid var(--border);
+  padding:0 32px;
+  display:flex;
+  gap:0;
+  position:sticky; top:61px; z-index:40;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.page-tab-btn {
+  padding:13px 20px;
+  font-size:13px; font-weight:600;
+  cursor:pointer; border:none; background:none;
+  color:var(--text-dim);
+  border-bottom:3px solid transparent;
+  transition:all .2s;
+  display:flex; align-items:center; gap:7px;
+  letter-spacing:.1px;
+}
+.page-tab-btn:hover { color:var(--text); background:var(--bg); }
+.page-tab-btn.active { color:var(--accent); border-bottom-color:var(--accent); }
+.tab-page { display:none; }
+.tab-page.active { display:block; }
+
+/* ─── Retail Hero Previous-Month strip ─── */
+.hero-prev-month {
+  margin-top:14px; padding-top:12px;
+  border-top:1px solid var(--border);
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+}
+.hero-prev-month .pm-label { font-size:11px; color:var(--text-dim); font-weight:500; }
+.hero-prev-month .pm-value { font-size:15px; font-weight:700; color:var(--text-dim); }
+.hero-prev-month .pm-arrow { font-size:11px; font-weight:600; }
+
+/* ─── Combined Retail 7-day mini chart ─── */
+.retail-mini-chart {
+  margin-top:16px; padding-top:14px;
+  border-top:1px solid var(--border);
+  height:76px; position:relative;
+}
+.retail-mini-chart canvas { width:100%!important; height:100%!important; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="header-logo">DF</div>
+    <h1><span>D-Flector</span> / Zivor — Daily Dashboard</h1>
+  </div>
+  <div class="header-right">
+    <div class="meta-item">Updated: <strong id="lastUpdate">Loading...</strong></div>
+    <div class="status-badge" id="dataStatus">LIVE</div>
+  </div>
+</div>
+
+<!-- Page-level tab navigation -->
+<nav class="page-tabs-nav">
+  <button class="page-tab-btn active" onclick="switchTab('overview',this)">📊 Overview</button>
+  <button class="page-tab-btn" onclick="switchTab('ebay',this)">⭐ eBay Performance</button>
+</nav>
+
+<div id="tab-overview" class="tab-page active">
+<div class="container">
+
+<!-- ═══ TOP: Hero KPIs ═══ -->
+<div class="hero-grid" id="heroRow"></div>
+
+<!-- ═══ D-FLECTOR BREAKUP ═══ -->
+<div class="section-title">D-Flector Breakup <span class="section-subtitle" id="tradeDateLabel"></span></div>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Monthly Target Progress <span class="pill" id="currentMonth"></span></div>
+    <div id="targetProgress"></div>
+    <div class="data-src">Source: Unleashed ERP</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Category Breakdown — Completed vs Open</div>
+    <div class="chart-wrap"><canvas id="categoryChart"></canvas></div>
+    <div class="data-src">Source: Unleashed ERP</div>
+  </div>
+</div>
+<div class="grid-2" style="margin-top:-4px">
+  <div class="card">
+    <div class="card-title">Monthly Sales Trend (D-Flector Trade)</div>
+    <div class="chart-wrap"><canvas id="monthlyTrendChart"></canvas></div>
+    <div class="data-src">Source: Unleashed ERP</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Category Split — Current Month</div>
+    <div class="chart-wrap"><canvas id="categoryPieChart"></canvas></div>
+    <div class="data-src">Source: Unleashed ERP</div>
+  </div>
+</div>
+
+<!-- ═══ INDIVIDUAL STORES ═══ -->
+<div class="section-title">Individual Stores <span class="section-subtitle" id="retailDateLabel"></span></div>
+<div class="store-cards-grid" id="storeCards"></div>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Store Ratings &amp; Listings</div>
+    <table class="tbl" id="ratingsTable">
+      <thead><tr><th>Store</th><th class="num">Rating</th><th class="num">Active Listings</th><th class="num">7d Trend</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="data-src">Source: Neto + Shopify + TradeMe APIs</div>
+  </div>
+  <div class="card">
+    <div class="card-title">eBay Service Metrics</div>
+    <table class="tbl" id="serviceTable">
+      <thead><tr><th>Store</th><th class="num">INAD Rate</th><th class="num">INR Rate</th><th class="num">Orders</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="data-src">Source: eBay API</div>
+  </div>
+</div>
+
+<!-- Weekly Sales Trends -->
+<div class="section-title">Weekly Sales Trends</div>
+<div class="card full" style="margin-bottom:20px">
+  <div class="card-title">
+    Rolling Weekly Sales by Store
+    <div class="tabs" id="storeTabs"></div>
+  </div>
+  <div class="chart-wrap" style="height:320px"><canvas id="weeklySalesChart"></canvas></div>
+  <div class="data-src">Source: All APIs</div>
+</div>
+
+<!-- Supplier Performance -->
+<div class="section-title">Supplier Performance</div>
+<div class="card full" style="margin-bottom:20px">
+  <div class="card-title">Zivor Supplier Performance</div>
+  <table class="tbl" id="supplierTable">
+    <thead><tr><th>Supplier</th><th class="num">Total MPN</th><th class="num">In-Stock</th><th class="num">Sold MPN</th><th class="num">Qty Sold</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="data-src">Source: Internal Database</div>
+</div>
+
+</div>
+</div><!-- end tab-overview -->
+
+<!-- ═══ EBAY PERFORMANCE TAB ═══ -->
+<div id="tab-ebay" class="tab-page">
+  <div class="container">
+    <div class="section-title" style="margin-top:24px">eBay Seller Performance <span class="section-subtitle" id="ebayPerfLabel"></span></div>
+    <div class="card full" id="ebayPerfSection" style="margin-bottom:20px">
+      <div class="card-title">Zivor Automotive — Seller Standards &amp; Service Metrics</div>
+      <div id="ebayPerfContent" style="padding-top:8px"></div>
+      <div class="data-src" id="ebayPerfSrc">Source: eBay Seller Hub (auto-fetched daily)</div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">D-Flector / Zivor Automotive — Automated Dashboard &middot; All values in AUD</div>
+
+<script>
+// ===== DASHBOARD DATA =====
+// This object is populated by the Python pipeline script (update_dashboard.py).
+// When running manually, edit this file or let the script overwrite this section.
+
+const DASHBOARD_DATA = {
+  "lastUpdated": "17 Apr 2026, 07:54 AM",
+  "currentMonth": "April 2026",
+  "currency": "AUD",
+  "retailDateRange": "2026-03-16 to 2026-04-16 (Last 31 days, ends T-1)",
+  "tradeDateRange": "2026-04-01 to 2026-04-17 (MTD + prior open)",
+  "trade": {
+    "target": 250000,
+    "completedMTD": 41078.98,
+    "openMTD": 115654.4,
+    "totalMTD": 156733.38,
+    "achievedPct": 0.627,
+    "prevMonthCompleted": 146808.43,
+    "prevMonthLabel": "Mar 26",
+    "monthlyHistory": {
+      "labels": [
+        "Jul 25",
+        "Aug 25",
+        "Sep 25",
+        "Oct 25",
+        "Nov 25",
+        "Dec 25",
+        "Jan 26",
+        "Feb 26",
+        "Mar 26",
+        "Apr 26"
+      ],
+      "completed": [
+        136418.65,
+        155183.97,
+        173814.34,
+        129513.74,
+        139303.86,
+        144634.59,
+        62798.84,
+        167876.43,
+        146808.43,
+        41078.98
+      ]
+    }
+  },
+  "retail7d": {
+    "labels": [
+      "Fri 10",
+      "Sat 11",
+      "Sun 12",
+      "Mon 13",
+      "Tue 14",
+      "Wed 15",
+      "Thu 16"
+    ],
+    "totals": [
+      5397.03,
+      3147.95,
+      4508.69,
+      4389.56,
+      6164.36,
+      5148.48,
+      796.51
+    ]
+  },
+  "categories": {
+    "labels": [
+      "Boat",
+      "Caravan",
+      "Jetski",
+      "Website"
+    ],
+    "completed": [
+      0.0,
+      39476.33,
+      0.0,
+      1602.65
+    ],
+    "open": [
+      0.0,
+      114039.11,
+      0.0,
+      1615.29
+    ],
+    "total": [
+      0.0,
+      153515.44,
+      0.0,
+      3217.94
+    ]
+  },
+  "stores": [
+    {
+      "name": "Zivor (eBay)",
+      "target": 150000,
+      "achieved": 111811.85,
+      "rating": 0.997,
+      "listings": 439178,
+      "trend7d": -0.103,
+      "source": "neto"
+    },
+    {
+      "name": "Zivor (Web)",
+      "target": 20000,
+      "achieved": 12522.86,
+      "rating": 4.6,
+      "listings": 430107,
+      "trend7d": -0.098,
+      "source": "neto"
+    },
+    {
+      "name": "AMS (eBay)",
+      "target": 15000,
+      "achieved": 6424.45,
+      "rating": 1.0,
+      "listings": 54476,
+      "trend7d": 0.718,
+      "source": "shopify"
+    },
+    {
+      "name": "AMS (Web)",
+      "target": 5000,
+      "achieved": 878.8,
+      "rating": 5.0,
+      "listings": 61135,
+      "trend7d": 0,
+      "source": "shopify"
+    },
+    {
+      "name": "ATS (eBay)",
+      "target": 30000,
+      "achieved": 24590.1,
+      "rating": 0.995,
+      "listings": 3598,
+      "trend7d": 0.512,
+      "source": "shopify"
+    },
+    {
+      "name": "ATS (Web)",
+      "target": 15000,
+      "achieved": 1043.05,
+      "rating": 3.5,
+      "listings": 3807,
+      "trend7d": 1.158,
+      "source": "shopify"
+    },
+    {
+      "name": "TradeMe (Zivor)",
+      "target": 15000,
+      "achieved": 4968.33,
+      "rating": 0.935,
+      "listings": 113371,
+      "trend7d": -0.135,
+      "source": "trademe"
+    }
+  ],
+  "serviceMetrics": [
+    {
+      "store": "Zivor",
+      "seller_level": "Top Rated",
+      "seller_level_projected": "Top Rated",
+      "next_evaluation": "2026-04-20",
+      "last_evaluation": "2026-03-20",
+      "defect_rate": 0.25,
+      "defect_count": 14,
+      "defect_total": 5655,
+      "defect_threshold_top": 0.5,
+      "defect_out_of_stock": 5,
+      "defect_out_of_stock_pct": 0.09,
+      "defect_no_resolution": 9,
+      "defect_no_resolution_pct": 0.16,
+      "defect_period": "01 Jan 2026 â€“ 31 Mar 2026",
+      "late_ship_rate": 3.91,
+      "late_ship_count": 161,
+      "late_ship_total": 4122,
+      "late_ship_threshold_top": 5.0,
+      "late_ship_period": "01 Jan 2026 â€“ 31 Mar 2026",
+      "cases_rate": 0.16,
+      "cases_count": 9,
+      "cases_total": 5655,
+      "cases_threshold_top": 0.3,
+      "inad_rate": 0.79,
+      "inad_count": 41,
+      "inad_total": 5202,
+      "inad_peer_rate": 0.47,
+      "inad_rating": "Average",
+      "inad_period": "Dec 2025 â€“ Feb 2026",
+      "inr_rate": 1.04,
+      "inr_count": 54,
+      "inr_total": 5214,
+      "inr_peer_rate": 0.31,
+      "inr_rating": "Average",
+      "inr_period": "Dec 2025 â€“ Feb 2026",
+      "inad": 41,
+      "inr": 54,
+      "orders": 5655,
+      "feedback_score": 25830,
+      "feedback_percent": 99.7,
+      "rating": 0.997,
+      "listings": 439178,
+      "dsr": {
+        "item_description": 0.0,
+        "communication": 0.0,
+        "shipping_time": 0.0,
+        "return_handling": 0.0
+      },
+      "last_updated": "2026-04-17T02:27:14.494135"
+    },
+    {
+      "store": "AMS",
+      "seller_level": "Top Rated",
+      "seller_level_projected": "Top Rated",
+      "next_evaluation": "2026-04-20",
+      "last_evaluation": "2026-03-20",
+      "defect_rate": 0.16,
+      "defect_count": 2,
+      "defect_total": 1273,
+      "defect_threshold_top": 0.5,
+      "defect_period": "02 Apr 2025 â€“ 01 Apr 2026",
+      "late_ship_rate": 1.83,
+      "late_ship_threshold_top": 5.0,
+      "cases_rate": 0.08,
+      "cases_threshold_top": 0.3,
+      "inad_rate": 0.54,
+      "inad_count": 7,
+      "inad_total": 1300,
+      "inad_peer_rate": 0.63,
+      "inad_rating": "Average",
+      "inad_period": "Mar 2025 â€“ Feb 2026",
+      "inr_rate": 0.58,
+      "inr_count": 7,
+      "inr_total": 1203,
+      "inr_peer_rate": 0.21,
+      "inr_rating": "Average",
+      "inr_period": "Mar 2025 â€“ Feb 2026",
+      "orders": 1273,
+      "feedback_score": 1389,
+      "feedback_percent": 100.0,
+      "rating": 1.0,
+      "listings": 54476,
+      "dsr": {
+        "item_description": 0.0,
+        "communication": 0.0,
+        "shipping_time": 0.0,
+        "return_handling": 0.0
+      },
+      "last_updated": "2026-04-17T02:27:15.589639",
+      "inad": 7,
+      "inr": 7
+    },
+    {
+      "store": "ATS",
+      "feedback_score": 814,
+      "feedback_percent": 99.5,
+      "listings": 3598,
+      "seller_level": "Top Rated",
+      "seller_level_projected": "Top Rated",
+      "next_evaluation": "2026-04-20",
+      "defect_rate": 0.3,
+      "defect_count": 4,
+      "defect_total": 1332,
+      "defect_threshold_top": 0.5,
+      "defect_period": "Apr 2025 – Mar 2026",
+      "late_ship_rate": 0.91,
+      "late_ship_count": 4,
+      "late_ship_total": 440,
+      "late_ship_threshold_top": 5.0,
+      "late_ship_period": "Apr 2025 – Mar 2026",
+      "cases_rate": 0.23,
+      "cases_count": 3,
+      "cases_total": 1332,
+      "cases_threshold_top": 0.3,
+      "inad_rate": 1.28,
+      "inad_count": 8,
+      "inad_total": 627,
+      "inad_peer_rate": 0.83,
+      "inad_rating": "Average",
+      "inad_period": "Mar 2025 – Feb 2026",
+      "inr_rate": 0.36,
+      "inr_count": 5,
+      "inr_total": 1378,
+      "inr_peer_rate": 0.22,
+      "inr_rating": "Average",
+      "inr_period": "Mar 2025 – Feb 2026",
+      "orders": 1378,
+      "rating": 0.995,
+      "dsr": {
+        "item_description": 0.0,
+        "communication": 0.0,
+        "shipping_time": 0.0,
+        "return_handling": 0.0
+      },
+      "last_updated": "2026-04-17T02:27:16.633702",
+      "inad": 8,
+      "inr": 5
+    }
+  ],
+  "suppliers": [],
+  "weeklySales": {
+    "labels": [],
+    "series": {}
+  }
+};
+
+// ===== RENDER FUNCTIONS =====
+
+function fmt(n) {
+  if (n >= 1000000) return 'AUD $' + (n/1000000).toFixed(1) + 'M';
+  if (n >= 1000) return 'AUD $' + (n/1000).toFixed(1) + 'K';
+  return 'AUD $' + n.toFixed(0);
+}
+function fmtExact(n) {
+  return 'AUD $' + n.toLocaleString('en-AU', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function fmtNum(n) { return n.toLocaleString(); }
+function pct(n) { return (n*100).toFixed(1) + '%'; }
+function trendArrow(v) {
+  if (v > 0.01) return '<span class="trend up">&#9650; ' + pct(Math.abs(v)) + '</span>';
+  if (v < -0.01) return '<span class="trend down">&#9660; ' + pct(Math.abs(v)) + '</span>';
+  return '<span class="trend flat">&#8212; 0%</span>';
+}
+
+function renderHero() {
+  const d = DASHBOARD_DATA;
+  const totalStoreAchieved = d.stores.reduce((s,st)=>s+st.achieved,0);
+  const totalStoreTarget  = d.stores.reduce((s,st)=>s+st.target,0);
+  const storePct = totalStoreTarget ? totalStoreAchieved/totalStoreTarget : 0;
+  const tradePct = d.trade.target ? d.trade.completedMTD/d.trade.target : 0;
+
+  // Per-source breakdowns
+  const netoStores    = d.stores.filter(s=>s.source==='neto');
+  const shopifyStores = d.stores.filter(s=>s.source==='shopify');
+  const trademeStores = d.stores.filter(s=>s.source==='trademe');
+  const netoTotal    = netoStores.reduce((s,st)=>s+st.achieved,0);
+  const shopifyTotal = shopifyStores.reduce((s,st)=>s+st.achieved,0);
+  const trademeTotal = trademeStores.reduce((s,st)=>s+st.achieved,0);
+
+  // Open orders as pill detail
+  const openOrders = d.trade.openMTD;
+
+  // Previous month context
+  const prevMonthCompleted = d.trade.prevMonthCompleted || 0;
+  const prevMonthLabel = d.trade.prevMonthLabel || 'Prev Month';
+  let prevMonthArrow = '';
+  if (prevMonthCompleted > 0 && d.trade.completedMTD >= 0) {
+    // Only show arrow if we're past the first week (avoid misleading very-early-month comparisons)
+    const now = new Date();
+    if (now.getDate() >= 8) {
+      const diff = d.trade.completedMTD - prevMonthCompleted;
+      prevMonthArrow = diff >= 0
+        ? `<span class="pm-arrow" style="color:var(--green)">▲ ${pct(Math.abs(diff/prevMonthCompleted))}</span>`
+        : `<span class="pm-arrow" style="color:var(--red)">▼ ${pct(Math.abs(diff/prevMonthCompleted))}</span>`;
+    }
+  }
+
+  document.getElementById('heroRow').innerHTML = `
+    <div class="card hero-card hero-dflector">
+      <div class="hero-icon">🏭</div>
+      <div class="hero-label">D-Flector Completed (MTD)</div>
+      <div class="hero-value">${fmtExact(d.trade.completedMTD)}</div>
+      <div class="hero-meta">
+        <span class="hero-badge">${pct(tradePct)} of ${fmt(d.trade.target)} target</span>
+        <span class="hero-sub">Open pipeline: <strong>${fmtExact(openOrders)}</strong></span>
+      </div>
+      <div class="hero-breakdown">
+        ${d.categories.labels.map((lbl,i)=> d.categories.completed[i]>0 ? `
+          <div class="hero-breakdown-item">
+            <span class="bd-label">${lbl}</span>
+            <span class="bd-value">${fmt(d.categories.completed[i])}</span>
+          </div>` : '').join('')}
+      </div>
+      ${prevMonthCompleted > 0 ? `
+      <div class="hero-prev-month">
+        <span class="pm-label">${prevMonthLabel} Final:</span>
+        <span class="pm-value">${fmtExact(prevMonthCompleted)}</span>
+        ${prevMonthArrow}
+      </div>` : ''}
+    </div>
+    <div class="card hero-card hero-retail">
+      <div class="hero-icon">🛒</div>
+      <div class="hero-label">Combined Retail — Neto, Shopify &amp; TradeMe</div>
+      <div class="hero-value">${fmtExact(totalStoreAchieved)}</div>
+      <div class="hero-meta">
+        <span class="hero-badge">${pct(storePct)} of ${fmt(totalStoreTarget)} target</span>
+        <span class="hero-sub">${DASHBOARD_DATA.retailDateRange ? DASHBOARD_DATA.retailDateRange.replace(/^\S+\s+to\s+/, 'to ') : 'Last 31 days'}</span>
+      </div>
+      <div class="hero-breakdown">
+        <div class="hero-breakdown-item">
+          <span class="bd-label">Neto</span>
+          <span class="bd-value">${fmt(netoTotal)}</span>
+        </div>
+        <div class="hero-breakdown-item">
+          <span class="bd-label">Shopify</span>
+          <span class="bd-value">${fmt(shopifyTotal)}</span>
+        </div>
+        <div class="hero-breakdown-item">
+          <span class="bd-label">TradeMe</span>
+          <span class="bd-value">${fmt(trademeTotal)}</span>
+        </div>
+      </div>
+      <div class="retail-mini-chart">
+        <canvas id="retailMiniChart"></canvas>
+      </div>
+    </div>
+  `;
+}
+
+function renderTargetProgress() {
+  const d = DASHBOARD_DATA.trade;
+  const bars = [
+    { name:'Completed', value:d.completedMTD, target:d.target, color:'#16a34a' },
+    { name:'Open Orders', value:d.openMTD, target:d.target, color:'#d97706' },
+    { name:'Total Pipeline', value:d.totalMTD, target:d.target, color:'#3b6cf5' },
+  ];
+  document.getElementById('targetProgress').innerHTML = bars.map(b=>{
+    const w = Math.min((b.value/b.target)*100,100);
+    const pctVal = ((b.value/b.target)*100).toFixed(0);
+    const pctClass = w>=100?'over':w>=50?'on-track':'behind';
+    return `<div class="progress-row">
+      <div class="store-name">${b.name}</div>
+      <div class="bar-wrap"><div class="bar" style="width:${w}%;background:${b.color}">${fmt(b.value)}</div></div>
+      <div class="pct-label ${pctClass}">${pctVal}%</div>
+    </div>`;
+  }).join('');
+  document.getElementById('currentMonth').textContent = DASHBOARD_DATA.currentMonth;
+}
+
+function renderStoreProgress() {
+  const el = document.getElementById('storeProgress');
+  if (!el) return;
+  el.innerHTML = DASHBOARD_DATA.stores.map(s=>{
+    const w = Math.min((s.achieved/s.target)*100,100);
+    const pctVal = ((s.achieved/s.target)*100).toFixed(0);
+    let color;
+    if (w>=100) color='#16a34a';
+    else if (w>=70) color='#3b6cf5';
+    else if (w>=40) color='#d97706';
+    else color='#dc2626';
+    const pctClass = w>=100?'over':w>=50?'on-track':'behind';
+    return `<div class="progress-row">
+      <div class="store-name">${s.name}</div>
+      <div class="bar-wrap"><div class="bar" style="width:${w}%;background:${color}">${fmt(s.achieved)}</div></div>
+      <div class="pct-label ${pctClass}">${pctVal}%</div>
+    </div>`;
+  }).join('');
+}
+
+function renderStoreCards() {
+  const el = document.getElementById('storeCards');
+  if (!el) return;
+  el.innerHTML = DASHBOARD_DATA.stores.map(s=>{
+    const w = Math.min((s.achieved/s.target)*100,100);
+    const pctVal = ((s.achieved/s.target)*100).toFixed(1);
+    let barColor, pctClass;
+    if (w>=100)     { barColor='#16a34a'; pctClass='over'; }
+    else if (w>=70) { barColor='#3b6cf5'; pctClass='on-track'; }
+    else if (w>=40) { barColor='#d97706'; pctClass='behind'; }
+    else            { barColor='#dc2626'; pctClass='critical'; }
+    const srcLabel = s.source==='neto' ? 'Neto' : s.source==='shopify' ? 'Shopify' : 'TradeMe';
+    const isPercentRating = s.rating<=1;
+    const ratingDisplay = isPercentRating ? pct(s.rating) : s.rating.toFixed(1)+'/5';
+    let ratingStatusClass;
+    if (isPercentRating) ratingStatusClass = s.rating>=0.98?'excellent':s.rating>=0.95?'good':s.rating>=0.90?'warning':'critical';
+    else ratingStatusClass = s.rating>=4.5?'excellent':s.rating>=3.5?'good':s.rating>=2.5?'warning':'critical';
+    return `<div class="card store-card">
+      <div class="sc-name">${s.name}</div>
+      <span class="sc-source src-${s.source}">${srcLabel}</span>
+      <div class="sc-value">${fmtExact(s.achieved)}</div>
+      <div class="sc-target">Target: ${fmt(s.target)}</div>
+      <div class="sc-bar-wrap"><div class="sc-bar" style="width:${w}%;background:${barColor}"></div></div>
+      <div class="sc-footer">
+        <span class="sc-pct ${pctClass}">${pctVal}%</span>
+        <span style="font-size:11px;color:var(--text-dim)">Rating: <span class="status-dot ${ratingStatusClass}" style="width:7px;height:7px"></span> ${ratingDisplay}</span>
+        ${trendArrow(s.trend7d)}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderRatingsTable() {
+  const tbody = document.querySelector('#ratingsTable tbody');
+  tbody.innerHTML = DASHBOARD_DATA.stores.map(s=>{
+    const isPercentRating = s.rating <= 1;
+    const ratingDisplay = isPercentRating ? pct(s.rating) : s.rating.toFixed(1)+'/5.0';
+    let statusClass;
+    if (isPercentRating) statusClass = s.rating>=0.98?'excellent':s.rating>=0.95?'good':s.rating>=0.90?'warning':'critical';
+    else statusClass = s.rating>=4.5?'excellent':s.rating>=3.5?'good':s.rating>=2.5?'warning':'critical';
+    return `<tr>
+      <td>${s.name}</td>
+      <td class="num">${ratingDisplay}</td>
+      <td class="num">${fmtNum(s.listings)}</td>
+      <td class="num">${trendArrow(s.trend7d)}</td>
+      <td><span class="status-dot ${statusClass}"></span></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderServiceMetrics() {
+  const tbody = document.querySelector('#serviceTable tbody');
+  tbody.innerHTML = DASHBOARD_DATA.serviceMetrics.map(s=>{
+    const inadOk = s.inad < 0.01;
+    const inrOk = s.inr < 0.01;
+    const status = inadOk&&inrOk ? 'excellent' : (inadOk||inrOk?'warning':'critical');
+    return `<tr>
+      <td>${s.store}</td>
+      <td class="num ${inadOk?'positive':'negative'}">${pct(s.inad)}</td>
+      <td class="num ${inrOk?'positive':'negative'}">${pct(s.inr)}</td>
+      <td class="num">${s.orders}</td>
+      <td><span class="status-dot ${status}"></span></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderSupplierTable() {
+  const tbody = document.querySelector('#supplierTable tbody');
+  if (!DASHBOARD_DATA.suppliers.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-dim);padding:20px;font-size:12px;">No supplier data available</td></tr>';
+    return;
+  }
+  tbody.innerHTML = DASHBOARD_DATA.suppliers.map(s=>`
+    <tr>
+      <td>${s.name}</td>
+      <td class="num">${fmtNum(s.totalMPN)}</td>
+      <td class="num">${fmtNum(s.inStock)}</td>
+      <td class="num">${fmtNum(s.soldMPN)}</td>
+      <td class="num">${fmtNum(s.qtySold)}</td>
+    </tr>`).join('');
+}
+
+// ===== CHARTS =====
+
+const chartColors = {
+  accent:'#3b6cf5', green:'#16a34a', orange:'#d97706',
+  purple:'#7c3aed', red:'#dc2626', teal:'#0891b2',
+  grid:'rgba(0,0,0,.06)', gridStrong:'rgba(0,0,0,.10)',
+  textDim:'#6b7194'
+};
+
+const chartDefaults = {
+  responsive:true, maintainAspectRatio:false,
+  plugins:{
+    legend:{ labels:{ color:chartColors.textDim, font:{size:11,family:'Inter'}, usePointStyle:true, pointStyle:'circle', padding:16 } }
+  },
+  scales: {
+    x:{ ticks:{color:chartColors.textDim, font:{size:10,family:'Inter'}}, grid:{color:chartColors.grid} },
+    y:{ ticks:{color:chartColors.textDim, font:{size:10,family:'Inter'}, callback:v=>v>=1000?'AUD $'+(v/1000)+'K':'AUD $'+v}, grid:{color:chartColors.grid} }
+  }
+};
+
+function renderCategoryChart() {
+  const c = DASHBOARD_DATA.categories;
+  new Chart(document.getElementById('categoryChart'),{
+    type:'bar',
+    data:{
+      labels:c.labels,
+      datasets:[
+        { label:'Completed', data:c.completed, backgroundColor:'rgba(22,163,74,.75)', borderRadius:6, barPercentage:.7 },
+        { label:'Open', data:c.open, backgroundColor:'rgba(217,119,6,.65)', borderRadius:6, barPercentage:.7 },
+      ]
+    },
+    options:{...chartDefaults, plugins:{...chartDefaults.plugins}}
+  });
+}
+
+function renderCategoryPie() {
+  const c = DASHBOARD_DATA.categories;
+  new Chart(document.getElementById('categoryPieChart'),{
+    type:'doughnut',
+    data:{
+      labels:c.labels,
+      datasets:[{
+        data:c.total,
+        backgroundColor:[chartColors.accent, chartColors.green, chartColors.orange, chartColors.purple],
+        borderWidth:2, borderColor:'#fff', hoverOffset:6
+      }]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false, cutout:'55%',
+      plugins:{
+        legend:{ position:'right', labels:{color:chartColors.textDim, font:{size:11,family:'Inter'}, usePointStyle:true, pointStyle:'circle', padding:14} }
+      }
+    }
+  });
+}
+
+function renderMonthlyTrend() {
+  const t = DASHBOARD_DATA.trade.monthlyHistory;
+  new Chart(document.getElementById('monthlyTrendChart'),{
+    type:'line',
+    data:{
+      labels:t.labels,
+      datasets:[{
+        label:'Completed Sales',
+        data:t.completed,
+        borderColor:chartColors.accent,
+        backgroundColor:'rgba(59,108,245,.08)',
+        fill:true, tension:.35, pointRadius:5, pointHoverRadius:7,
+        pointBackgroundColor:'#fff', pointBorderColor:chartColors.accent, pointBorderWidth:2,
+      },{
+        label:'Monthly Target',
+        data:Array(t.labels.length).fill(DASHBOARD_DATA.trade.target),
+        borderColor:'rgba(220,38,38,.4)', borderDash:[8,4], pointRadius:0, fill:false, borderWidth:2,
+      }]
+    },
+    options:chartDefaults
+  });
+}
+
+let weeklySalesChart = null;
+function renderWeeklySales(selectedStores) {
+  const ws = DASHBOARD_DATA.weeklySales;
+  const colors = [chartColors.accent, chartColors.green, chartColors.orange, chartColors.purple, chartColors.red, chartColors.teal];
+  const stores = selectedStores || Object.keys(ws.series);
+  const datasets = stores.map((name,i)=>({
+    label:name, data:ws.series[name],
+    borderColor:colors[i%colors.length], backgroundColor:'transparent',
+    tension:.35, pointRadius:4, pointHoverRadius:6,
+    pointBackgroundColor:'#fff', pointBorderColor:colors[i%colors.length], pointBorderWidth:2,
+  }));
+  if(weeklySalesChart) weeklySalesChart.destroy();
+  weeklySalesChart = new Chart(document.getElementById('weeklySalesChart'),{
+    type:'line',
+    data:{ labels:ws.labels, datasets },
+    options:chartDefaults
+  });
+}
+
+function renderEbayPerformance() {
+  const container = document.getElementById('ebayPerfContent');
+  const labelEl = document.getElementById('ebayPerfLabel');
+  if (labelEl && DASHBOARD_DATA.lastUpdated) labelEl.textContent = '– updated ' + DASHBOARD_DATA.lastUpdated;
+
+  const levelColor = lc => lc === 'Top Rated' ? 'var(--green)' : lc === 'Above Standard' ? 'var(--orange)' : 'var(--red)';
+
+  function metricBar(label, rate, threshold, count, total, period, peerRate, peerLabel) {
+    const fillPct = Math.min((rate / threshold) * 100, 100);
+    const ok   = rate <= threshold * 0.75;
+    const warn = !ok && rate <= threshold;
+    const barColor = ok ? 'var(--green)' : warn ? 'var(--orange)' : 'var(--red)';
+    const textCls  = ok ? 'positive' : warn ? '' : 'negative';
+    const warnStyle = warn ? 'color:var(--orange)' : '';
+    return `
+      <div style="background:var(--bg);border-radius:10px;padding:16px;border:1px solid var(--border)">
+        <div style="font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">${label}</div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
+          <span class="${textCls}" style="font-size:22px;font-weight:700;${warnStyle}">${rate.toFixed(2)}%</span>
+          <span style="font-size:11px;color:var(--text-dim)">/ ${threshold}% limit</span>
+        </div>
+        ${period ? `<div style="font-size:10px;color:var(--text-dim);margin-bottom:6px">${period}</div>` : '<div style="margin-bottom:6px"></div>'}
+        <div style="background:var(--border);border-radius:4px;height:5px;margin-bottom:8px;overflow:hidden">
+          <div style="height:100%;width:${fillPct}%;background:${barColor};border-radius:4px"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between">
+          <span style="font-size:11px;color:var(--text-dim)">${count.toLocaleString()} of ${total.toLocaleString()} txns</span>
+          ${peerRate != null ? `<span style="font-size:11px;color:var(--text-dim)">Peers: ${peerRate}% ${peerLabel||''}</span>` : ''}
+        </div>
+      </div>`;
+  }
+
+  function serviceMetricCard(label, rate, count, total, peerRate, rating, period) {
+    const ratingColor = rating === 'Low' || rating === 'Average' ? 'var(--green)' : rating === 'High' ? 'var(--orange)' : 'var(--red)';
+    return `
+      <div style="background:var(--bg);border-radius:10px;padding:16px;border:1px solid var(--border)">
+        <div style="font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">${label}</div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
+          <span style="font-size:22px;font-weight:700;color:${ratingColor}">${rate != null ? rate.toFixed(2)+'%' : '–'}</span>
+          <span style="font-size:12px;font-weight:600;color:${ratingColor}">${rating || ''}</span>
+        </div>
+        ${period ? `<div style="font-size:10px;color:var(--text-dim);margin-bottom:8px">${period}</div>` : '<div style="margin-bottom:8px"></div>'}
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:11px;color:var(--text-dim)">${count ? count.toLocaleString()+' of '+(total||0).toLocaleString()+' txns' : '–'}</span>
+          ${peerRate != null ? `<span style="font-size:11px;color:var(--text-dim)">Peers avg: ${peerRate}%</span>` : ''}
+        </div>
+      </div>`;
+  }
+
+  function renderStoreSection(s) {
+    if (!s || !s.seller_level) {
+      return `<div style="color:var(--text-dim);font-size:13px;padding:12px 0">No eBay performance data available — add eBay access token in config.json.</div>`;
+    }
+    return `
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px">
+        <div style="background:var(--bg);border-radius:10px;padding:16px;border:1px solid var(--border);text-align:center">
+          <div style="font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Current Level</div>
+          <div style="font-size:18px;font-weight:700;color:${levelColor(s.seller_level)}">${s.seller_level}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:3px">as of today</div>
+        </div>
+        <div style="background:var(--bg);border-radius:10px;padding:16px;border:1px solid var(--border);text-align:center">
+          <div style="font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Projected Level</div>
+          <div style="font-size:18px;font-weight:700;color:${levelColor(s.seller_level_projected||s.seller_level)}">${s.seller_level_projected||s.seller_level}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:3px">at next evaluation</div>
+        </div>
+        <div style="background:var(--bg);border-radius:10px;padding:16px;border:1px solid var(--border);text-align:center">
+          <div style="font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Next Evaluation</div>
+          <div style="font-size:18px;font-weight:700;color:var(--text)">${s.next_evaluation||'20 Apr 2026'}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:3px">eBay review date</div>
+        </div>
+        <div style="background:var(--bg);border-radius:10px;padding:16px;border:1px solid var(--border);text-align:center">
+          <div style="font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Feedback Score</div>
+          <div style="font-size:18px;font-weight:700;color:var(--accent)">${s.feedback_score?s.feedback_score.toLocaleString():'–'}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:3px">${s.feedback_percent||''}% positive</div>
+        </div>
+      </div>
+      <div style="font-size:11px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px;padding-top:4px">
+        Seller Standards${s.defect_period ? ' – ' + s.defect_period : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px">
+        ${metricBar('Transaction Defect Rate', s.defect_rate||0, s.defect_threshold_top||0.5, s.defect_count||0, s.defect_total||0, s.defect_period||'', null, '')}
+        ${metricBar('Late Shipment Rate', s.late_ship_rate||0, s.late_ship_threshold_top||5.0, s.late_ship_count||0, s.late_ship_total||0, s.late_ship_period||'', null, '')}
+        ${metricBar('Cases Without Resolution', s.cases_rate||0, s.cases_threshold_top||0.3, s.cases_count||0, s.cases_total||0, '', null, '')}
+      </div>
+      <div style="font-size:11px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">
+        Service Metrics${s.inad_period ? ' – ' + s.inad_period : ''} (vs Peer Sellers)
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        ${serviceMetricCard('Item Not As Described (INAD)', s.inad_rate, s.inad_count, s.inad_total, s.inad_peer_rate, s.inad_rating, s.inad_period)}
+        ${serviceMetricCard('Item Not Received (INR)', s.inr_rate, s.inr_count, s.inr_total, s.inr_peer_rate, s.inr_rating, s.inr_period)}
+      </div>`;
+  }
+
+  const storeNames = ['Zivor', 'AMS', 'ATS'];
+  let html = '';
+  for (const name of storeNames) {
+    const s = (DASHBOARD_DATA.serviceMetrics || []).find(m => m.store === name);
+    html += `
+      <div style="margin-bottom:36px">
+        <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid var(--border);letter-spacing:.02em">${name} eBay Account</div>
+        ${renderStoreSection(s)}
+      </div>`;
+  }
+
+  if (!html.trim()) {
+    container.innerHTML = '<p style="color:var(--text-dim);font-size:13px;padding:8px 0">No eBay performance data available.</p>';
+    return;
+  }
+  container.innerHTML = html;
+}
+function renderRetailMiniChart() {
+  const r7 = DASHBOARD_DATA.retail7d;
+  if (!r7 || !r7.labels || !r7.totals || !r7.totals.some(v=>v>0)) return;
+  const canvas = document.getElementById('retailMiniChart');
+  if (!canvas) return;
+  const maxVal = Math.max(...r7.totals, 1);
+  // Color bars: most recent day slightly brighter
+  const bgColors = r7.totals.map((_,i) =>
+    i === r7.totals.length - 1 ? 'rgba(59,108,245,0.85)' : 'rgba(59,108,245,0.40)'
+  );
+  new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: r7.labels,
+      datasets: [{
+        data: r7.totals,
+        backgroundColor: bgColors,
+        borderRadius: 3,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 600 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => 'AUD $' + ctx.raw.toLocaleString('en-AU', {minimumFractionDigits:0, maximumFractionDigits:0})
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color:'rgba(107,113,148,0.75)', font:{size:9, family:'Inter'} },
+          grid: { display:false },
+          border: { display:false }
+        },
+        y: {
+          display: false,
+          max: maxVal * 1.15,
+          grid: { display:false }
+        }
+      }
+    }
+  });
+}
+
+function switchTab(tab, btn) {
+  document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.page-tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  btn.classList.add('active');
+  if (tab === 'ebay') renderEbayPerformance();
+}
+
+function renderStoreTabs() {
+  const stores = Object.keys(DASHBOARD_DATA.weeklySales.series);
+  const container = document.getElementById('storeTabs');
+  container.innerHTML = `<div class="tab active" data-store="all">All</div>` +
+    stores.map(s=>`<div class="tab" data-store="${s}">${s}</div>`).join('');
+  container.querySelectorAll('.tab').forEach(tab=>{
+    tab.addEventListener('click',()=>{
+      container.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+      tab.classList.add('active');
+      const store = tab.dataset.store;
+      renderWeeklySales(store==='all'?null:[store]);
+    });
+  });
+}
+
+// ===== INIT =====
+document.getElementById('lastUpdate').textContent = DASHBOARD_DATA.lastUpdated;
+
+// Date range labels
+const tradeLabelEl = document.getElementById('tradeDateLabel');
+const retailLabelEl = document.getElementById('retailDateLabel');
+if (tradeLabelEl && DASHBOARD_DATA.tradeDateRange) tradeLabelEl.textContent = '— ' + DASHBOARD_DATA.tradeDateRange;
+if (retailLabelEl && DASHBOARD_DATA.retailDateRange) retailLabelEl.textContent = '— ' + DASHBOARD_DATA.retailDateRange;
+
+renderHero();
+renderRetailMiniChart();
+renderTargetProgress();
+renderStoreCards();
+renderRatingsTable();
+renderServiceMetrics();
+renderSupplierTable();
+renderCategoryChart();
+renderCategoryPie();
+renderMonthlyTrend();
+renderStoreTabs();
+renderWeeklySales();
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+# Secrets - NEVER commit these
+config.json
+
+# Node
+node_modules/
+.wrangler/
+package-lock.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Pipeline logs and temp files
+*.log
+*.txt
+deploy_tmp/
+
+# One-off debug scripts
+fetch_ats*.py
+patch_*.py
+restore_config.py
+save_ams_token.py
+search.py
+test_trading_api.py
+wrangler_deploy.py
+check_*.py
+cf_deploy.py
+get_shopify_token.py
+
+# Dashboard snapshots and exports
+*.png
+*.xlsx
+*.csv
+*.docx
+
+# Skill files
+*.skill
