@@ -3,12 +3,9 @@ name: Update Zivor Dashboard
 on:
   # 6:00 AM AEDT (UTC+11) — October through March
   # 6:00 AM AEST (UTC+10) — April through September
-  # Each cron only fires during its season so the workflow runs exactly once per day at 6 AM local time.
-  # Note: during the DST switch weeks (early Apr / early Oct) it may be 1 hour off for a few days.
   schedule:
     - cron: '0 19 * 10,11,12,1,2,3 *'   # Oct-Mar: 19:00 UTC = 6 AM AEDT (UTC+11)
     - cron: '0 20 * 4,5,6,7,8,9 *'       # Apr-Sep: 20:00 UTC = 6 AM AEST (UTC+10)
-  # Allow manual trigger from GitHub Actions tab
   workflow_dispatch:
 
 env:
@@ -46,8 +43,20 @@ jobs:
       - name: Install wrangler
         run: npm install wrangler
 
-      - name: Run dashboard pipeline
+      - name: Run dashboard pipeline (fetch + build dashboard.html)
         run: python -u update_dashboard.py
+
+      - name: Deploy to Cloudflare Pages
+        run: |
+          echo "Deploying dashboard.html to Cloudflare Pages..."
+          CF_TOKEN=$(python3 -c "import json; c=json.load(open('config.json')); print(c['cloudflare']['api_token'])")
+          CF_ACCOUNT=$(python3 -c "import json; c=json.load(open('config.json')); print(c['cloudflare']['account_id'])")
+          mkdir -p deploy_tmp
+          cp dashboard.html deploy_tmp/index.html
+          CLOUDFLARE_API_TOKEN=$CF_TOKEN ./node_modules/.bin/wrangler pages deploy deploy_tmp/ \
+            --project-name dflector-dashboard \
+            --branch main
+          echo "Deploy complete -> https://dflector-dashboard.pages.dev"
 
       - name: Upload dashboard as artifact (for debugging)
         if: always()
