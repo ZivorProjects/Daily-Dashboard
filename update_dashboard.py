@@ -878,7 +878,9 @@ def inject_data_into_html(html_path, dashboard_data):
 
 def run_pipeline(config_path, dry_run=False):
     cfg = load_config(config_path)
-    now = datetime.now()
+    from datetime import timezone as _tz
+    AEDT = _tz(timedelta(hours=11))  # UTC+11 AEDT year-round
+    now = datetime.now(AEDT).replace(tzinfo=None)
     today = now.strftime("%Y-%m-%d")
     month_start = now.strftime("%Y-%m-01")
     # Retail stores (Zivor, AMS, ATS, TradeMe) use last 31 days ending T-1 (yesterday)
