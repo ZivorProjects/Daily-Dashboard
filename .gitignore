@@ -14,6 +14,7 @@ __pycache__/
 # Pipeline logs and temp files
 *.log
 *.txt
+!requirements.txt
 deploy_tmp/
 
 # One-off debug scripts
