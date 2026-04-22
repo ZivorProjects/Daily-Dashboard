@@ -46,7 +46,6 @@ jobs:
 
       - name: Deploy to Cloudflare Pages
         run: |
-          echo "Deploying dashboard.html to Cloudflare Pages..."
           CF_TOKEN=$(python3 -c "import json; c=json.load(open('config.json')); print(c['cloudflare']['api_token'])")
           mkdir -p deploy_tmp
           cp dashboard.html deploy_tmp/index.html
@@ -54,6 +53,11 @@ jobs:
             --project-name dflector-dashboard \
             --branch main
           echo "Deploy complete -> https://dflector-dashboard.pages.dev"
+
+      - name: Post summary to Teams
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: python post_to_teams.py
 
       - name: Upload dashboard as artifact (for debugging)
         if: always()
