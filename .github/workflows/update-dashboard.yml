@@ -12,7 +12,7 @@ env:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repo
@@ -24,7 +24,10 @@ jobs:
           python-version: '3.13'
 
       - name: Install Python dependencies
-        run: pip install requests
+        run: pip install requests playwright
+
+      - name: Install Playwright browser
+        run: playwright install chromium --with-deps
 
       - name: Write config.json from secret
         env:
@@ -44,17 +47,21 @@ jobs:
       - name: Run dashboard pipeline (fetch + build dashboard.html)
         run: python -u update_dashboard.py
 
-      - name: Deploy to Cloudflare Pages
+      - name: Take hero snapshot (dashboard.html → deploy_tmp/snapshot.png)
+        run: |
+          mkdir -p deploy_tmp
+          python take_snapshot.py
+
+      - name: Deploy to Cloudflare Pages (dashboard.html + snapshot.png)
         run: |
           CF_TOKEN=$(python3 -c "import json; c=json.load(open('config.json')); print(c['cloudflare']['api_token'])")
-          mkdir -p deploy_tmp
           cp dashboard.html deploy_tmp/index.html
           CLOUDFLARE_API_TOKEN=$CF_TOKEN ./node_modules/.bin/wrangler pages deploy deploy_tmp/ \
             --project-name dflector-dashboard \
             --branch main
           echo "Deploy complete -> https://dflector-dashboard.pages.dev"
 
-      - name: Post summary to Teams
+      - name: Post snapshot card to Teams
         env:
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: python post_to_teams.py
@@ -64,5 +71,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dashboard-html
-          path: dashboard.html
+          path: |
+            dashboard.html
+            deploy_tmp/snapshot.png
           retention-days: 7

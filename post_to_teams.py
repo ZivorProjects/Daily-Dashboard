@@ -1,17 +1,21 @@
 """
-Post daily Zivor Dashboard summary to Microsoft Teams group chat
-via Power Automate webhook.
+Post Zivor Dashboard snapshot to Microsoft Teams (Team Huddle group chat)
+via Power Automate webhook using an Adaptive Card with image.
 """
 import json
 import os
 import re
 import sys
+import time
 
 try:
     import requests
 except ImportError:
     print("[WARN] requests not installed — skipping Teams notification")
     sys.exit(0)
+
+DASHBOARD_URL  = "https://dflector-dashboard.pages.dev"
+SNAPSHOT_URL   = f"{DASHBOARD_URL}/snapshot.png"
 
 
 def extract_dashboard_data(html_path):
@@ -23,42 +27,74 @@ def extract_dashboard_data(html_path):
     return json.loads(match.group(1))
 
 
-def format_message(data):
-    trade        = data.get("trade", {})
-    stores       = data.get("stores", [])
-    last_updated = data.get("lastUpdated", "Unknown")
+def build_adaptive_card(data):
+    last_updated  = data.get("lastUpdated", "")
     current_month = data.get("currentMonth", "")
-    svc          = data.get("serviceMetrics", [])
+    trade         = data.get("trade", {})
+    stores        = data.get("stores", [])
+    svc           = data.get("serviceMetrics", [])
 
-    completed  = trade.get("completedMTD", 0)
-    target     = trade.get("target", 250000)
-    open_mtd   = trade.get("openMTD", 0)
-    pct        = (completed / target * 100) if target else 0
-
+    completed    = trade.get("completedMTD", 0)
+    target       = trade.get("target", 250000)
+    open_mtd     = trade.get("openMTD", 0)
+    pct          = (completed / target * 100) if target else 0
     retail_total = sum(s.get("achieved", 0) for s in stores)
 
-    ebay_lines = []
+    ebay_parts = []
     for sm in svc:
         name  = sm.get("store", "")
         level = sm.get("seller_level", "")
         if name and level:
             icon = "✅" if "Top Rated" in level else "⚠️"
-            ebay_lines.append(f"{icon} {name}: {level}")
-    ebay_block = " &nbsp;|&nbsp; ".join(ebay_lines) if ebay_lines else "No data"
+            ebay_parts.append(f"{icon} {name}: {level}")
+    ebay_text = "  |  ".join(ebay_parts) if ebay_parts else "No data"
 
-    url = "https://dflector-dashboard.pages.dev"
+    # Add cache-busting timestamp so Teams doesn't show yesterday's image
+    ts = int(time.time())
 
-    return (
-        f"<b>📊 Zivor Dashboard — {last_updated}</b><br><br>"
-        f"<b>D-Flector Trade &nbsp;({current_month})</b><br>"
-        f"&nbsp;&nbsp;✅ Completed MTD: <b>AUD ${completed:,.2f}</b> &nbsp;({pct:.1f}% of ${target:,.0f} target)<br>"
-        f"&nbsp;&nbsp;📋 Open Pipeline: AUD ${open_mtd:,.2f}<br><br>"
-        f"<b>Combined Retail &nbsp;(last 31 days)</b><br>"
-        f"&nbsp;&nbsp;🛒 Total: <b>AUD ${retail_total:,.2f}</b><br><br>"
-        f"<b>eBay Seller Status</b><br>"
-        f"&nbsp;&nbsp;{ebay_block}<br><br>"
-        f'🔗 <a href="{url}">View Full Dashboard</a>'
-    )
+    card = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": [
+            {
+                "type": "TextBlock",
+                "text": f"📊 Zivor Dashboard — {last_updated}",
+                "weight": "Bolder",
+                "size": "Large",
+                "color": "Accent",
+                "wrap": True
+            },
+            {
+                "type": "Image",
+                "url": f"{SNAPSHOT_URL}?t={ts}",
+                "altText": "Dashboard snapshot",
+                "size": "Stretch",
+                "style": "Default"
+            },
+            {
+                "type": "FactSet",
+                "facts": [
+                    {"title": f"D-Flector Completed ({current_month})",
+                     "value": f"AUD ${completed:,.2f}  ({pct:.1f}% of target)"},
+                    {"title": "Open Pipeline",
+                     "value": f"AUD ${open_mtd:,.2f}"},
+                    {"title": "Combined Retail (31 days)",
+                     "value": f"AUD ${retail_total:,.2f}"},
+                    {"title": "eBay Seller Status",
+                     "value": ebay_text},
+                ]
+            }
+        ],
+        "actions": [
+            {
+                "type": "Action.OpenUrl",
+                "title": "View Full Dashboard",
+                "url": DASHBOARD_URL
+            }
+        ]
+    }
+    return card
 
 
 def main():
@@ -70,11 +106,13 @@ def main():
     html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 
     try:
-        data    = extract_dashboard_data(html_path)
-        message = format_message(data)
-        resp    = requests.post(webhook_url, json={"text": message}, timeout=30)
+        data = extract_dashboard_data(html_path)
+        card = build_adaptive_card(data)
+
+        payload  = {"card": card}
+        resp     = requests.post(webhook_url, json=payload, timeout=30)
         resp.raise_for_status()
-        print(f"[OK] Teams notification sent (HTTP {resp.status_code})")
+        print(f"[OK] Teams Adaptive Card sent (HTTP {resp.status_code})")
     except Exception as e:
         print(f"[WARN] Teams notification failed: {e}")
         # Non-fatal — dashboard deploy already succeeded
