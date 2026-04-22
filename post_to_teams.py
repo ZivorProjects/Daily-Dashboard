@@ -21,10 +21,14 @@ SNAPSHOT_URL   = f"{DASHBOARD_URL}/snapshot.png"
 def extract_dashboard_data(html_path):
     with open(html_path, "r", encoding="utf-8") as f:
         html = f.read()
-    match = re.search(r"const DASHBOARD_DATA\s*=\s*(\{.*?\});\s*</script>", html, re.DOTALL)
-    if not match:
+    marker = "const DASHBOARD_DATA = "
+    idx = html.find(marker)
+    if idx == -1:
         raise ValueError("DASHBOARD_DATA not found in dashboard.html")
-    return json.loads(match.group(1))
+    json_start = html.index("{", idx)
+    decoder = json.JSONDecoder()
+    data, _ = decoder.raw_decode(html[json_start:])
+    return data
 
 
 def build_adaptive_card(data):
