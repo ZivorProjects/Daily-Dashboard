@@ -29,7 +29,9 @@ cf_deploy.py
 get_shopify_token.py
 
 # Dashboard snapshots and exports
+# snapshot.png is committed to repo for Teams image hosting
 *.png
+!snapshot.png
 *.xlsx
 *.csv
 *.docx

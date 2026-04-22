@@ -15,7 +15,7 @@ except ImportError:
     sys.exit(0)
 
 DASHBOARD_URL = "https://dflector-dashboard.pages.dev"
-SNAPSHOT_URL  = DASHBOARD_URL + "/snapshot.png"
+SNAPSHOT_URL  = "https://raw.githubusercontent.com/ZivorProjects/Daily-Dashboard/main/snapshot.png"
 
 
 def extract_dashboard_data(html_path):
