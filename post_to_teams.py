@@ -113,9 +113,12 @@ def main():
         data = extract_dashboard_data(html_path)
         card = build_adaptive_card(data)
 
-        payload  = {"card": card}
+        # Send card as JSON string — Power Automate expects stringified card
+        payload  = {"card": json.dumps(card)}
         resp     = requests.post(webhook_url, json=payload, timeout=30)
-        resp.raise_for_status()
+        if not resp.ok:
+            print(f"[WARN] Teams webhook returned {resp.status_code}: {resp.text[:500]}")
+            resp.raise_for_status()
         print(f"[OK] Teams Adaptive Card sent (HTTP {resp.status_code})")
     except Exception as e:
         print(f"[WARN] Teams notification failed: {e}")
