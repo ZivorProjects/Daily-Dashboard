@@ -76,6 +76,10 @@ jobs:
 
       # ── Main pipeline ────────────────────────────────────────────────────
       - name: Run dashboard pipeline (fetch + build dashboard.html)
+        env:
+          EBAY_OAUTH_REFRESH_ZIVOR: ${{ secrets.EBAY_OAUTH_REFRESH_ZIVOR }}
+          EBAY_OAUTH_REFRESH_AMS:   ${{ secrets.EBAY_OAUTH_REFRESH_AMS }}
+          EBAY_OAUTH_REFRESH_ATS:   ${{ secrets.EBAY_OAUTH_REFRESH_ATS }}
         run: python -u update_dashboard.py
 
       - name: Take hero snapshot (D-Flector + Retail cards only)

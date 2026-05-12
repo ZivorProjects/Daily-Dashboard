@@ -1062,6 +1062,40 @@ def run_pipeline(config_path, dry_run=False):
     # Legacy single-store reference kept for backward compat
     ebay_live = ebay_live_by_store.get("zivor")
 
+    # ── 4.5b. eBay Sell Analytics API: live seller standards (OAuth tokens) ──
+    # Runs for any store where EBAY_OAUTH_REFRESH_<STORE> is set as a GitHub Secret.
+    # Exchanges the stored refresh token for a short-lived OAuth access token, then
+    # calls /sell/analytics/v1/seller_standards_profile (defect/late/cases/level)
+    # and /sell/analytics/v1/customer_service_metric_summary (INAD + INR).
+    # Results are merged into smo so the Build step below picks them up automatically.
+    oauth_refresh_tokens = {
+        "zivor": os.environ.get("EBAY_OAUTH_REFRESH_ZIVOR", ""),
+        "ams":   os.environ.get("EBAY_OAUTH_REFRESH_AMS",   ""),
+        "ats":   os.environ.get("EBAY_OAUTH_REFRESH_ATS",   ""),
+    }
+    for _store_key, _refresh_token in oauth_refresh_tokens.items():
+        if not _refresh_token:
+            continue
+        print(f"\n[4.5b] eBay Analytics API for {_store_key.upper()} ...")
+        try:
+            _oauth_token = eBayClient.refresh_oauth_access_token(
+                app_id=ecfg["app_id"],
+                cert_id=ecfg["cert_id"],
+                refresh_token=_refresh_token,
+            )
+            _analytics_cl = eBayClient(
+                app_id=ecfg["app_id"],
+                cert_id=ecfg["cert_id"],
+                access_token=_oauth_token,
+                sandbox_mode=False,
+            )
+            _live_standards = _analytics_cl.get_seller_standards_analytics()
+            if _live_standards:
+                smo.setdefault(_store_key, {}).update(_live_standards)
+                print(f"  [{_store_key.upper()}] Live standards merged OK")
+        except Exception as _e:
+            print(f"  [WARN] Analytics API failed for {_store_key.upper()}: {_e}")
+
 
     # -- Build service metrics from eBay-channel stores --
     for s in stores_data:

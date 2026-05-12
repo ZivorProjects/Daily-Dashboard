@@ -565,6 +565,166 @@ class eBayClient:
         print("[eBay] Metrics fetched successfully")
         return metrics
 
+    # ── Sell Analytics API — OAuth tokens, live seller standards ────────────
+
+    @staticmethod
+    def refresh_oauth_access_token(app_id: str, cert_id: str, refresh_token: str) -> str:
+        """Exchange an OAuth refresh token for a new short-lived access token.
+
+        Called at the start of each GitHub Actions run. The pipeline stores only
+        the long-lived refresh token (18-month expiry) in GitHub Secrets; access
+        tokens (2-hour expiry) are obtained fresh on every run.
+        """
+        import base64 as _b64
+        credentials = _b64.b64encode(f"{app_id}:{cert_id}".encode()).decode()
+        r = requests.post(
+            "https://api.ebay.com/identity/v1/oauth2/token",
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Content-Type":  "application/x-www-form-urlencoded",
+            },
+            data={
+                "grant_type":    "refresh_token",
+                "refresh_token": refresh_token,
+                "scope":         "https://api.ebay.com/oauth/api_scope/sell.analytics.readonly",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        token = r.json().get("access_token", "")
+        if not token:
+            raise ValueError(f"No access_token in response: {r.text[:200]}")
+        return token
+
+    def get_seller_standards_analytics(self, marketplace_id: str = "EBAY_AU") -> Dict:
+        """Fetch live seller standards and service metrics via eBay Sell Analytics API.
+
+        Requires an OAuth Bearer token (NOT Auth'n'Auth) with scope:
+            https://api.ebay.com/oauth/api_scope/sell.analytics.readonly
+
+        Returns a dict with the same keys as service_metrics_override so it can be
+        merged directly into the pipeline's smo dict. Falls back gracefully:
+        missing fields are omitted and config.json values are kept as fallback.
+        """
+        headers = {
+            "Authorization":           f"Bearer {self.access_token}",
+            "Content-Type":            "application/json",
+            "X-EBAY-C-MARKETPLACE-ID": marketplace_id,
+        }
+        result: Dict = {}
+
+        # ── 1. Seller Standards Profile (seller level, defect, late ship, cases) ──
+        try:
+            r = requests.get(
+                f"{self.base_url}/sell/analytics/v1/seller_standards_profile",
+                headers=headers, timeout=30,
+            )
+            r.raise_for_status()
+            data = r.json()
+
+            profiles    = data.get("standardsProfiles", [])
+            current_p   = next((p for p in profiles
+                                if p.get("cycle", {}).get("cycleType") == "CURRENT"),  None)
+            projected_p = next((p for p in profiles
+                                if p.get("cycle", {}).get("cycleType") == "PROJECTED"), None)
+
+            def _fmt_date(iso: str) -> str:
+                try:
+                    return datetime.strptime(iso[:10], "%Y-%m-%d").strftime("%d %b %Y")
+                except Exception:
+                    return iso[:10]
+
+            def _period(m: Dict) -> str:
+                s = _fmt_date(m.get("lookbackStartDate", ""))
+                e = _fmt_date(m.get("lookbackEndDate", ""))
+                return f"{s} \u2013 {e}" if s and e else ""
+
+            if current_p:
+                level = current_p.get("sellerLevel", "")
+                result["seller_level"] = level.replace("_", " ").title() if level else ""
+
+                eval_date = current_p.get("cycle", {}).get("evaluationDate", "")
+                if eval_date:
+                    result["next_evaluation"] = eval_date[:10]
+
+                by_name = {m["name"]: m for m in current_p.get("metrics", [])}
+
+                tdr = by_name.get("TRANSACTION_DEFECT_RATE", {})
+                if "value" in tdr:
+                    result["defect_rate"]          = round(float(tdr["value"]) * 100, 2)
+                    result["defect_threshold_top"] = 0.5
+                    result["defect_period"]        = _period(tdr)
+
+                lsr = by_name.get("LATE_SHIPMENT_RATE", {})
+                if "value" in lsr:
+                    result["late_ship_rate"]          = round(float(lsr["value"]) * 100, 2)
+                    result["late_ship_threshold_top"] = 5.0
+                    result["late_ship_period"]        = _period(lsr)
+
+                cas = by_name.get("CASES_AS_A_PERCENTAGE_OF_TOTAL_TRANSACTIONS", {})
+                if "value" in cas:
+                    result["cases_rate"]          = round(float(cas["value"]) * 100, 2)
+                    result["cases_threshold_top"] = 0.3
+
+            if projected_p:
+                level = projected_p.get("sellerLevel", "")
+                result["seller_level_projected"] = level.replace("_", " ").title() if level else ""
+
+            print(f"  [Analytics] Seller level: {result.get('seller_level', '?')} "
+                  f"-> projected {result.get('seller_level_projected', '?')}")
+            print(f"  [Analytics] Defect: {result.get('defect_rate', '?')}%  "
+                  f"Late: {result.get('late_ship_rate', '?')}%  "
+                  f"Cases: {result.get('cases_rate', '?')}%")
+
+        except Exception as e:
+            print(f"  [WARN] seller_standards_profile failed: {e}")
+
+        # ── 2. Customer Service Metrics (INAD + INR) ──────────────────────────
+        for metric_type, prefix in [
+            ("ITEM_NOT_AS_DESCRIBED", "inad"),
+            ("ITEM_NOT_RECEIVED",     "inr"),
+        ]:
+            try:
+                r = requests.get(
+                    f"{self.base_url}/sell/analytics/v1/customer_service_metric_summary",
+                    headers=headers,
+                    params={
+                        "customer_service_metric_type": metric_type,
+                        "evaluation_marketplace_id":    marketplace_id,
+                        "evaluation_type":              "CURRENT",
+                    },
+                    timeout=30,
+                )
+                r.raise_for_status()
+                d = r.json()
+
+                rate       = float(d.get("metricPercent",        d.get("ratePercent", 0))) * 100
+                peer_rate  = float(d.get("peerBenchmarkPercent", d.get("benchmarkPercent", 0))) * 100
+                raw_rating = d.get("rating", "AVERAGE")
+                rating     = raw_rating.replace("_", " ").title()
+
+                cycle = d.get("evaluationCycle", d.get("cycle", {}))
+                s = cycle.get("startDate", "")[:7]
+                e = cycle.get("endDate",   "")[:7]
+                try:
+                    fmt = lambda x: datetime.strptime(x, "%Y-%m").strftime("%b %Y") if x else ""
+                    period = f"{fmt(s)} \u2013 {fmt(e)}" if s and e else ""
+                except Exception:
+                    period = ""
+
+                result[f"{prefix}_rate"]      = round(rate, 2)
+                result[f"{prefix}_peer_rate"] = round(peer_rate, 2)
+                result[f"{prefix}_rating"]    = rating
+                result[f"{prefix}_period"]    = period
+
+                print(f"  [Analytics] {prefix.upper()}: {round(rate, 2)}%  "
+                      f"(peer {round(peer_rate, 2)}%, {rating})")
+
+            except Exception as e:
+                print(f"  [WARN] customer_service_metric {metric_type} failed: {e}")
+
+        return result
+
 
 def format_ebay_metrics_for_dashboard(metrics: Dict) -> Dict:
     """
