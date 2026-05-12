@@ -1,16 +1,10 @@
 """
-get_ebay_oauth_tokens.py  —  One-time helper to generate eBay OAuth refresh tokens.
+get_ebay_oauth_tokens.py  —  Generate eBay OAuth refresh tokens (one per store).
 
-Generates 3 refresh tokens (one per seller account) all using Zivor's single developer app.
-One eBay developer app can authorise multiple seller accounts — this is the correct approach.
+Each store has its own eBay developer app, so each needs its own RuName and
+produces a refresh token tied to that specific app's credentials.
 
-Run once, then add the 3 tokens to GitHub Secrets. Tokens last ~18 months.
-
-Usage:
-    python get_ebay_oauth_tokens.py
-
-Requirements:
-    pip install requests
+Usage:  python get_ebay_oauth_tokens.py
 """
 
 import json, urllib.parse, webbrowser, requests, base64
@@ -18,34 +12,19 @@ import json, urllib.parse, webbrowser, requests, base64
 CONFIG = "config.json"
 
 STORES = [
-    {
-        "key":         "zivor",
-        "label":       "Zivor Automotive",
-        "username":    "zivor_automotive",
-        "secret_name": "EBAY_OAUTH_REFRESH_ZIVOR",
-    },
-    {
-        "key":         "ams",
-        "label":       "Australian Moto Spares",
-        "username":    "australian_moto_spares",
-        "secret_name": "EBAY_OAUTH_REFRESH_AMS",
-    },
-    {
-        "key":         "ats",
-        "label":       "Australian Tow Spares",
-        "username":    "australian_tow_spares",
-        "secret_name": "EBAY_OAUTH_REFRESH_ATS",
-    },
+    {"key": "zivor", "label": "Zivor Automotive",       "username": "zivor_automotive",        "secret": "EBAY_OAUTH_REFRESH_ZIVOR"},
+    {"key": "ams",   "label": "Australian Moto Spares", "username": "australian_moto_spares",   "secret": "EBAY_OAUTH_REFRESH_AMS"},
+    {"key": "ats",   "label": "Australian Tow Spares",  "username": "australian_tow_spares",    "secret": "EBAY_OAUTH_REFRESH_ATS"},
 ]
 
 SCOPE = "https://api.ebay.com/oauth/api_scope/sell.analytics.readonly"
 
 
-def load_main_creds():
-    """Always use Zivor's main app credentials — one app authorises all 3 seller accounts."""
+def load_creds(store_key):
     with open(CONFIG, encoding="utf-8") as f:
         c = json.load(f)
-    return c["ebay"]["app_id"], c["ebay"]["cert_id"]
+    s = c["ebay"]["stores"][store_key]
+    return s["oauth_app_id"], s["oauth_cert_id"]
 
 
 def exchange_code(app_id, cert_id, runame, code):
@@ -64,83 +43,87 @@ def exchange_code(app_id, cert_id, runame, code):
         timeout=30,
     )
     if not r.ok:
-        print(f"  eBay error: {r.status_code} — {r.text[:400]}")
+        print(f"\n  eBay error {r.status_code}: {r.text[:500]}")
         r.raise_for_status()
     return r.json()
 
 
+def get_runame(store):
+    print(f"\n  Find the RuName for the {store['label']} app:")
+    print(f"  1. Go to https://developer.ebay.com/my/auth/?env=production&index=0")
+    print(f"  2. Select app: {store['app_id']}")
+    print(f"  3. Click the OAuth tab → copy the RuName field")
+    print(f"     (looks like: YourName-AppName-PRD-xxxxxxx-xxxxxxxx)")
+    return input(f"\n  Paste RuName for {store['label']}: ").strip()
+
+
 def main():
-    app_id, cert_id = load_main_creds()
-
     print("=" * 65)
-    print("  eBay OAuth Refresh Token Generator")
+    print("  eBay OAuth Refresh Token Generator  (per-store apps)")
     print("=" * 65)
-    print(f"\nUsing Zivor developer app: {app_id}")
-    print("\nThis app will authorise all 3 seller accounts.")
-    print("You need the RuName (eBay Redirect URL name) for this app.\n")
-    print("Find it at: https://developer.ebay.com/my/auth/?env=production&index=0")
-    print("  → Select the Zivor app → OAuth tab → RuName field")
-    print("  It looks like: RaviShar-Claude-PRD-xxxxxxx-xxxxxxxx\n")
-
-    runame = input("Paste the RuName for the Zivor app: ").strip()
-    if not runame:
-        print("No RuName entered. Exiting.")
-        return
+    print("\nEach store uses its own developer app and RuName.")
+    print("Sign in with the CORRECT seller account for each store.\n")
 
     results = {}
 
     for store in STORES:
+        app_id, cert_id = load_creds(store["key"])
+        store["app_id"] = app_id
+
         print(f"\n{'─'*65}")
-        print(f"  Account {STORES.index(store)+1}/3: {store['label']}  ({store['username']})")
+        print(f"  Store : {store['label']}  ({store['username']})")
+        print(f"  App ID: {app_id}")
         print(f"{'─'*65}")
+
+        runame = get_runame(store)
+        if not runame:
+            print("  Skipped (no RuName entered).")
+            continue
 
         auth_url = (
             "https://auth.ebay.com/oauth2/authorize"
-            f"?client_id={app_id}"
+            f"?client_id={urllib.parse.quote(app_id)}"
             f"&redirect_uri={urllib.parse.quote(runame)}"
             f"&response_type=code"
             f"&scope={urllib.parse.quote(SCOPE)}"
         )
 
-        print(f"\n  Opening browser ...")
-        print(f"  → Sign in with the eBay seller account: {store['username']}")
-        print(f"  → If already logged into a different account, sign out first.\n")
+        print(f"\n  Opening browser — sign in as: {store['username']}")
+        print(f"  (If a different account is logged in, sign out first)\n")
         webbrowser.open(auth_url)
 
-        print("  After authorising you'll land on a URL like:")
-        print("  https://signin.ebay.com/...?code=v^1.1%23i...&expires_in=299")
-        redirect = input("\n  Paste the full redirect URL here: ").strip()
+        print("  After authorising, you'll land on a URL containing ?code=...")
+        redirect = input("  Paste the full redirect URL: ").strip()
 
-        # Extract auth code
         code = None
         if "code=" in redirect:
-            raw_code = redirect.split("code=")[1].split("&")[0]
-            code = urllib.parse.unquote(raw_code)
+            raw = redirect.split("code=")[1].split("&")[0]
+            code = urllib.parse.unquote(raw)
 
         if not code:
-            print(f"  ERROR: Could not find 'code=' in the URL. Skipping.")
+            print("  ERROR: No 'code=' found in URL. Skipping.")
             continue
 
-        print(f"\n  Exchanging auth code for tokens ...")
+        print("\n  Exchanging auth code for tokens...")
         try:
-            token_data = exchange_code(app_id, cert_id, runame, code)
+            data = exchange_code(app_id, cert_id, runame, code)
         except Exception as e:
-            print(f"  ERROR: {e}")
+            print(f"  FAILED: {e}")
             continue
 
-        refresh_token = token_data.get("refresh_token", "")
-        expires_s     = token_data.get("refresh_token_expires_in", 0)
+        refresh_token = data.get("refresh_token", "")
+        expires_days  = int(data.get("refresh_token_expires_in", 0)) // 86400
 
         if not refresh_token:
-            print(f"  ERROR: No refresh_token in response: {token_data}")
+            print(f"  ERROR: No refresh_token in response: {data}")
             continue
 
         results[store["key"]] = {
-            "secret_name":   store["secret_name"],
+            "secret":        store["secret"],
             "refresh_token": refresh_token,
-            "expires_days":  int(expires_s) // 86400,
+            "expires_days":  expires_days,
         }
-        print(f"  ✅ Token obtained! Expires in {int(expires_s)//86400} days.")
+        print(f"  ✅ Token obtained! Expires in ~{expires_days} days ({expires_days//30} months).")
 
     # Summary
     print(f"\n{'='*65}")
@@ -149,18 +132,16 @@ def main():
     print("  https://github.com/ZivorProjects/Daily-Dashboard/settings/secrets/actions\n")
 
     for key, r in results.items():
-        print(f"  Secret : {r['secret_name']}")
+        print(f"  Secret : {r['secret']}")
         print(f"  Value  : {r['refresh_token']}")
         print(f"  Expires: ~{r['expires_days']} days")
         print()
 
-    if len(results) < len(STORES):
-        missing = [s["secret_name"] for s in STORES if s["key"] not in results]
-        print(f"  ⚠  Missing tokens for: {', '.join(missing)}")
-        print("  Re-run to retry those accounts.")
+    missing = [s["secret"] for s in STORES if s["key"] not in results]
+    if missing:
+        print(f"  ⚠  Missing: {', '.join(missing)} — re-run to retry.")
     else:
-        print("  All 3 tokens generated successfully.")
-        print("  Update the 3 GitHub Secrets, then trigger a manual run to verify.")
+        print("  All 3 tokens ready. Update GitHub Secrets then trigger a run.")
 
     input("\nPress Enter to close...")
 
