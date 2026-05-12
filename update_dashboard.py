@@ -1209,6 +1209,201 @@ def inject_data_into_html(html_path, dashboard_data):
 
 
 # ─────────────────────────────────────────────
+#  EBAY SELL ANALYTICS API HELPER
+# ─────────────────────────────────────────────
+
+def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
+                                marketplace_id: str = "EBAY_AU") -> dict:
+    """Exchange an OAuth refresh token for an access token, then call the eBay
+    Sell Analytics API to fetch live seller standards (defect rate, late shipment,
+    INAD, INR) and return them as a dict compatible with service_metrics_override.
+
+    Falls back gracefully on any error — always returns a (possibly empty) dict.
+    """
+    # ── 1. Exchange refresh token for access token ────────────────────────
+    try:
+        creds_b64 = base64.b64encode(f"{app_id}:{cert_id}".encode()).decode()
+        r = requests.post(
+            "https://api.ebay.com/identity/v1/oauth2/token",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": f"Basic {creds_b64}",
+            },
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "scope": (
+                    "https://api.ebay.com/oauth/api_scope/sell.analytics.readonly "
+                    "https://api.ebay.com/oauth/api_scope/sell.account.readonly"
+                ),
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        token_data = r.json()
+        access_token = token_data.get("access_token") or token_data.get("token")
+        if not access_token:
+            print(f"      [Analytics] Token exchange returned no access_token: {token_data}")
+            return {}
+        print(f"      [Analytics] OAuth token obtained (expires in {token_data.get('expires_in', '?')}s)")
+    except Exception as e:
+        print(f"      [Analytics] Token exchange failed: {e}")
+        return {}
+
+    auth_headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    base_url = "https://api.ebay.com"
+    result: dict = {}
+
+    # ── 2. Seller Standards Profile (defect rate, late ship, cases, seller level) ──
+    try:
+        r = requests.get(
+            f"{base_url}/sell/analytics/v1/seller_standards_profile",
+            headers=auth_headers,
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+
+        # The API returns a list of program objects — find EBAY_AU or the default
+        programs = data.get("standardsProfiles") or data.get("programs") or []
+        default_prog = None
+        for prog in programs:
+            if prog.get("evaluationMarketplaceId") == marketplace_id or prog.get("program") == marketplace_id:
+                default_prog = prog
+                break
+        if default_prog is None and programs:
+            default_prog = programs[0]
+        if default_prog is None:
+            default_prog = data.get("defaultProgram") or data
+
+        level_map = {
+            "TOP_RATED": "Top Rated",
+            "ABOVE_STANDARD": "Above Standard",
+            "STANDARD": "Standard",
+            "BELOW_STANDARD": "Below Standard",
+        }
+        raw_level = default_prog.get("standardsLevel") or default_prog.get("sellerStandardsLevel", "")
+        if raw_level:
+            result["seller_level"] = level_map.get(raw_level, raw_level.replace("_", " ").title())
+            result["seller_level_projected"] = result["seller_level"]
+
+        cycle = default_prog.get("cycle") or {}
+        if cycle.get("evaluationDate"):
+            result["next_evaluation"] = cycle["evaluationDate"][:10]
+
+        for m in default_prog.get("metrics", []):
+            name = (m.get("name") or "").upper()
+            try:
+                val = float(str(m.get("value", "0")).rstrip("%"))
+            except (ValueError, TypeError):
+                val = 0.0
+
+            if "DEFECT" in name:
+                result["defect_rate"] = val
+                for t in m.get("thresholds", []):
+                    try:
+                        result.setdefault("defect_threshold_top",
+                                          float(str(t.get("upperThreshold") or t.get("value", 0.5)).rstrip("%")))
+                    except Exception:
+                        pass
+            elif "LATE_SHIPMENT" in name or "LATE_SHIP" in name:
+                result["late_ship_rate"] = val
+            elif "CASE" in name or "BUYER_RESOLUTION" in name:
+                result["cases_rate"] = val
+
+        print(f"      [Analytics] Standards: level={result.get('seller_level')} "
+              f"defect={result.get('defect_rate')}% "
+              f"late={result.get('late_ship_rate')}% "
+              f"cases={result.get('cases_rate')}%")
+    except Exception as e:
+        print(f"      [Analytics] Standards API error: {e}")
+
+    # ── 3. INAD (Item Not As Described) ──────────────────────────────────
+    try:
+        r = requests.get(
+            f"{base_url}/sell/analytics/v1/customer_service_metric/summary",
+            headers=auth_headers,
+            params={
+                "customer_service_metric_type": "ITEM_NOT_AS_DESCRIBED",
+                "evaluation_marketplace_id": marketplace_id,
+                "evaluation_type": "CURRENT",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        def _pct(v):
+            try:
+                return round(float(str(v).rstrip("% ")), 2)
+            except Exception:
+                return 0.0
+        if data.get("metricPercent") is not None:
+            result["inad_rate"] = _pct(data["metricPercent"])
+        if data.get("metricBenchmarkPercent") is not None:
+            result["inad_peer_rate"] = _pct(data["metricBenchmarkPercent"])
+        inad_rate = result.get("inad_rate", 0)
+        inad_peer = result.get("inad_peer_rate", 0)
+        if inad_peer > 0:
+            if inad_rate >= inad_peer * 2:
+                result["inad_rating"] = "Very High"
+            elif inad_rate >= inad_peer * 1.25:
+                result["inad_rating"] = "High"
+            elif inad_rate <= inad_peer * 0.75:
+                result["inad_rating"] = "Low"
+            else:
+                result["inad_rating"] = "Average"
+        print(f"      [Analytics] INAD: {result.get('inad_rate')}% "
+              f"(peer avg {result.get('inad_peer_rate')}%, rating={result.get('inad_rating')})")
+    except Exception as e:
+        print(f"      [Analytics] INAD API error: {e}")
+
+    # ── 4. INR (Item Not Received) ────────────────────────────────────────
+    try:
+        r = requests.get(
+            f"{base_url}/sell/analytics/v1/customer_service_metric/summary",
+            headers=auth_headers,
+            params={
+                "customer_service_metric_type": "ITEM_NOT_RECEIVED",
+                "evaluation_marketplace_id": marketplace_id,
+                "evaluation_type": "CURRENT",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        def _pct(v):
+            try:
+                return round(float(str(v).rstrip("% ")), 2)
+            except Exception:
+                return 0.0
+        if data.get("metricPercent") is not None:
+            result["inr_rate"] = _pct(data["metricPercent"])
+        if data.get("metricBenchmarkPercent") is not None:
+            result["inr_peer_rate"] = _pct(data["metricBenchmarkPercent"])
+        inr_rate = result.get("inr_rate", 0)
+        inr_peer = result.get("inr_peer_rate", 0)
+        if inr_peer > 0:
+            if inr_rate >= inr_peer * 2:
+                result["inr_rating"] = "Very High"
+            elif inr_rate >= inr_peer * 1.25:
+                result["inr_rating"] = "High"
+            elif inr_rate <= inr_peer * 0.75:
+                result["inr_rating"] = "Low"
+            else:
+                result["inr_rating"] = "Average"
+        print(f"      [Analytics] INR: {result.get('inr_rate')}% "
+              f"(peer avg {result.get('inr_peer_rate')}%, rating={result.get('inr_rating')})")
+    except Exception as e:
+        print(f"      [Analytics] INR API error: {e}")
+
+    return result
+
+
+# ─────────────────────────────────────────────
 #  MAIN PIPELINE
 # ─────────────────────────────────────────────
 
@@ -1357,6 +1552,24 @@ def run_pipeline(config_path, dry_run=False):
                 # Get listings cache for this store
                 listings_cache = listings_cache_dict.get(store_key, 0) if isinstance(listings_cache_dict, dict) else 0
                 store_sm = cfg.get("service_metrics_override", {}).get(store_key, {})
+
+                # [4.5b] Live seller standards via Sell Analytics API (OAuth refresh token)
+                refresh_env = f"EBAY_OAUTH_REFRESH_{store_key.upper()}"
+                refresh_token = os.environ.get(refresh_env, "")
+                if refresh_token:
+                    print(f"    [4.5b] eBay Analytics API ({store_key.upper()})...")
+                    live_analytics = _fetch_ebay_sell_analytics(
+                        app_id=ecfg["app_id"],
+                        cert_id=ecfg["cert_id"],
+                        refresh_token=refresh_token,
+                    )
+                    if live_analytics:
+                        store_sm = {**store_sm, **live_analytics}
+                        print(f"    [{store_key.upper()}] Live standards merged OK")
+                    else:
+                        print(f"    [{store_key.upper()}] Analytics API returned no data — using config.json fallback")
+                else:
+                    print(f"    [WARN] {refresh_env} not set — seller standards from config.json (static)")
 
                 # Only attempt live scrape for Zivor (single browser session)
                 if store_key == "zivor":
