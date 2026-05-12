@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-D-Flector / Zivor Dashboard — Automated Data Pipeline
+D-Flector / Zivor Dashboard -- Automated Data Pipeline
 ======================================================
 Pulls data from:
-  1. Unleashed ERP     — D-Flector trade orders
-  2. Neto (Maropost)   — Zivor eBay + Zivor Web sales, ratings, listings
-  3. Shopify           — AMS (eBay + Web) and ATS (eBay + Web) sales
-  4. TradeMe API       — Zivor NZ marketplace sales
+  1. Unleashed ERP     -- D-Flector trade orders
+  2. Neto (Maropost)   -- Zivor eBay + Zivor Web sales, ratings, listings
+  3. Shopify           -- AMS (eBay + Web) and ATS (eBay + Web) sales
+  4. TradeMe API       -- Zivor NZ marketplace sales
 
 Then injects fresh data into dashboard.html.
 
@@ -37,7 +37,7 @@ except ImportError:
     print("ERROR: 'requests' library required. Install with: pip install requests")
     sys.exit(1)
 
-# eBay client (optional — only active when config.json has "ebay" section with token)
+# eBay client (optional -- only active when config.json has "ebay" section with token)
 try:
     from ebay_client import eBayClient, format_ebay_metrics_for_dashboard
     _EBAY_CLIENT_AVAILABLE = True
@@ -81,9 +81,16 @@ class UnleashedClient:
             "api-auth-signature": sig,
         }
         url = f"{self.base_url}/{endpoint}" + (f"?{qs}" if qs else "")
-        r = requests.get(url, headers=headers, timeout=30)
-        r.raise_for_status()
-        return r.json()
+        for _attempt in range(2):
+            try:
+                r = requests.get(url, headers=headers, timeout=45)
+                r.raise_for_status()
+                return r.json()
+            except requests.exceptions.Timeout:
+                if _attempt == 0:
+                    time.sleep(5)
+                    continue
+                raise
 
     def get_sales_orders(self, start_date, end_date, page=1):
         return self._get("SalesOrders", {
@@ -328,7 +335,7 @@ class NetoClient:
         }
         # Neto doesn't return total count directly; use inventory count endpoint
         data = self._post("GetItem", body)
-        # Approximate — for exact count we'd paginate, but this gives the idea
+        # Approximate -- for exact count we'd paginate, but this gives the idea
         return len(data.get("Item", []))
 
     def get_store_data(self, store_config, targets, month_start, today):
@@ -347,7 +354,7 @@ class NetoClient:
             status = (order.get("OrderStatus", "") or "").lower()
             if status in NETO_SKIP:
                 continue
-            # GrandTotal includes 10% GST — divide by 1.1 to get ex-GST amount
+            # GrandTotal includes 10% GST -- divide by 1.1 to get ex-GST amount
             gross = float(order.get("GrandTotal", 0) or order.get("SubTotal", 0) or 0)
             subtotal = round(gross / 1.1, 2)
             channel = (order.get("SalesChannel", "") or "").lower()
@@ -549,6 +556,8 @@ class ShopifyClient:
         products = self.get_product_count()
 
         # Daily 7d breakdown for Combined Retail mini chart
+        # Shopify returns created_at in UTC; convert to AEST (UTC+10) so the date
+        # matches the Australian calendar day the sale actually occurred on.
         seven_days_ago = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         ebay_daily7d = {}
         web_daily7d = {}
@@ -556,7 +565,13 @@ class ShopifyClient:
         for o in orders:
             if o.get("financial_status") in skip_statuses or o.get("cancelled_at"):
                 continue
-            created = (o.get("created_at", "") or "")[:10]
+            raw_ts = (o.get("created_at", "") or "")
+            try:
+                # Parse UTC timestamp and shift to AEDT (UTC+11, active until Apr 5 2026)
+                dt_utc = datetime.strptime(raw_ts[:19], "%Y-%m-%dT%H:%M:%S")
+                created = (dt_utc + timedelta(hours=11)).strftime("%Y-%m-%d")
+            except Exception:
+                created = raw_ts[:10]
             if not created or created < seven_days_ago or created > today:
                 continue
             subtotal = float(o.get("subtotal_price", 0))
@@ -742,6 +757,112 @@ class TradeMeClient:
 
 
 # ─────────────────────────────────────────────
+#  HERO IMAGE GENERATOR
+# ─────────────────────────────────────────────
+
+def generate_hero_image(trade, stores_data, now, targets, output_path):
+    """Generate a PNG snapshot of the two hero cards (D-Flector MTD + Combined Retail).
+    Saved to output_path and also copied to OneDrive for Teams sharing."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        from matplotlib.patches import FancyBboxPatch
+        import matplotlib.patheffects as pe
+    except ImportError:
+        print("  [WARN] matplotlib not available -- skipping hero image")
+        return False
+
+    total_retail        = sum(s.get("achieved", 0) for s in stores_data)
+    total_retail_target = sum(s.get("target",   0) for s in stores_data)
+    retail_pct  = total_retail / total_retail_target if total_retail_target else 0
+    trade_target = targets.get("dflector_trade", 250000)
+    trade_pct   = trade["total"] / trade_target if trade_target else 0
+
+    # Neto / Shopify / TradeMe subtotals for breakdown
+    neto_total     = sum(s["achieved"] for s in stores_data if s.get("source") == "neto")
+    shopify_total  = sum(s["achieved"] for s in stores_data if s.get("source") == "shopify")
+    trademe_total  = sum(s["achieved"] for s in stores_data if s.get("source") == "trademe")
+
+    BG      = "#0f1117"
+    GREEN   = "#00c896"
+    BLUE    = "#4da6ff"
+    CARD_GR = "#0d2b22"
+    CARD_BL = "#0d1f3c"
+    WHITE   = "#ffffff"
+    GREY    = "#8a9bb0"
+
+    fig = plt.figure(figsize=(14, 5.2), facecolor=BG)
+
+    def draw_card(ax, bg_col, accent, title, big_num, badge_text, sub_lines):
+        ax.set_facecolor(bg_col)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
+        # Border
+        rect = FancyBboxPatch((0.02, 0.02), 0.96, 0.96,
+                               boxstyle="round,pad=0.02",
+                               linewidth=2, edgecolor=accent,
+                               facecolor=bg_col, zorder=0)
+        ax.add_patch(rect)
+        # Title
+        ax.text(0.06, 0.88, title, color=GREY, fontsize=11,
+                fontweight="bold", va="top", transform=ax.transAxes)
+        # Big number
+        ax.text(0.06, 0.72, big_num, color=accent, fontsize=34,
+                fontweight="bold", va="top", transform=ax.transAxes)
+        # Badge pill
+        ax.text(0.06, 0.48, badge_text, color=accent, fontsize=11,
+                fontweight="bold", va="top", transform=ax.transAxes,
+                bbox=dict(boxstyle="round,pad=0.3", facecolor=bg_col,
+                          edgecolor=accent, linewidth=1.5))
+        # Sub lines
+        y = 0.33
+        for line in sub_lines:
+            ax.text(0.06, y, line, color=GREY, fontsize=9.5,
+                    va="top", transform=ax.transAxes)
+            y -= 0.10
+
+    # Left card -- D-Flector
+    ax1 = fig.add_axes([0.02, 0.05, 0.47, 0.90])
+    draw_card(
+        ax1, CARD_GR, GREEN,
+        "D-FLECTOR TRADE  (MTD)",
+        f"${trade['completed']:,.0f}",
+        f"{trade_pct:.0%}  of  ${trade_target:,.0f}  target",
+        [
+            f"Completed:      ${trade['completed']:,.0f}",
+            f"Open Orders:  ${trade['open']:,.0f}",
+            f"Total Pipeline:  ${trade['total']:,.0f}",
+        ]
+    )
+
+    # Right card -- Combined Retail
+    ax2 = fig.add_axes([0.51, 0.05, 0.47, 0.90])
+    draw_card(
+        ax2, CARD_BL, BLUE,
+        "COMBINED RETAIL  (Last 31 days, T-1)",
+        f"${total_retail:,.0f}",
+        f"{retail_pct:.0%}  of  ${total_retail_target:,.0f}  target",
+        [
+            f"Neto (Zivor):         ${neto_total:,.0f}",
+            f"Shopify (AMS+ATS): ${shopify_total:,.0f}",
+            f"TradeMe (NZ):       ${trademe_total:,.0f}",
+        ]
+    )
+
+    # Footer date
+    fig.text(0.5, 0.005, f"Generated  {now.strftime('%d %b %Y  %I:%M %p')}  |  Zivor Dashboard",
+             ha="center", color=GREY, fontsize=8)
+
+    plt.savefig(output_path, dpi=150, bbox_inches="tight", facecolor=BG)
+    plt.close()
+    print(f"  [OK] Hero image saved -> {output_path}")
+    return True
+
+
+# ─────────────────────────────────────────────
 #  ONEDRIVE PUBLISH
 # ─────────────────────────────────────────────
 
@@ -752,12 +873,13 @@ SHAREPOINT_BASE = (
     "https://dflector.sharepoint.com/sites/D-FlectorCommercial/Shared%20Documents"
 )
 DASHBOARD_FILENAME = "Daily Dashboard.html"
+SNAPSHOT_FILENAME  = "Daily Dashboard Snapshot.png"
 
-def copy_to_onedrive(html_path):
-    """Copy 'Daily Dashboard.html' to the D-Flector Commercial SharePoint
+def copy_to_onedrive(html_path, image_path=None):
+    """Copy 'Daily Dashboard.html' (and snapshot) to the D-Flector Commercial SharePoint
     document library synced via OneDrive.  File is instantly accessible to all team
-    members via the persistent SharePoint link — no re-sharing needed.
-    Returns dashboard_url or None if folder not found."""
+    members via the persistent SharePoint link -- no re-sharing needed.
+    Returns (dashboard_url, image_url) or (None, None) if folder not found."""
     import shutil
 
     folder = None
@@ -767,7 +889,7 @@ def copy_to_onedrive(html_path):
             break
 
     if not folder:
-        print(f"  [WARN] Publish folder not found — skipping publish")
+        print(f"  [WARN] Publish folder not found -- skipping publish")
         print(f"         Looked in: {PUBLISH_FOLDER_PATHS[0]}")
         return None, None
 
@@ -777,81 +899,295 @@ def copy_to_onedrive(html_path):
     dashboard_url = f"{SHAREPOINT_BASE}/{DASHBOARD_FILENAME.replace(' ', '%20')}"
     print(f"  [OK] Dashboard published -> {dashboard_url}")
 
+    # Copy snapshot image
+    image_url = None
+    if image_path and os.path.exists(image_path):
+        dest_img = os.path.join(folder, SNAPSHOT_FILENAME)
+        shutil.copy2(image_path, dest_img)
+        image_url = f"{SHAREPOINT_BASE}/{SNAPSHOT_FILENAME.replace(' ', '%20')}"
+        print(f"  [OK] Snapshot published  -> {image_url}")
 
-    return dashboard_url
-
-
-
-
-
-
+    return dashboard_url, image_url
 
 
 # ─────────────────────────────────────────────
-#  CLOUDFLARE PAGES DEPLOY  (public hosting)
+#  NETLIFY DEPLOY  (browser-friendly hosting)
 # ─────────────────────────────────────────────
 
 def deploy_to_cloudflare_pages(html_path, api_token, account_id, project_name):
-    """Deploy dashboard.html to Cloudflare Pages via wrangler.js + node.exe.
+    """Deploy the dashboard HTML to Cloudflare Pages.
 
-    Calls node.exe directly with wrangler.js to avoid the wrangler.cmd
-    ENDLOCAL PATH stripping issue. node.exe must be at C:\Program Files\nodejs\node.exe.
+    Tries wrangler CLI first (most reliable), then falls back to the
+    Direct Upload API if wrangler is not available.
+
+    Requires:
+        config.json -> cloudflare.api_token    (API token with Pages Write + User Details Read + Memberships Read)
+        config.json -> cloudflare.account_id   (Cloudflare account ID)
+        config.json -> cloudflare.project_name (Pages project name, e.g. dflector-dashboard)
 
     Returns the live site URL string, or None on failure.
     """
-    import shutil, subprocess
+    import hashlib
+    import subprocess
+    import shutil
+    import tempfile
 
-    dashboard_dir = os.path.dirname(html_path)
-    node_exe      = __import__("shutil").which("node") or r"C:\Program Files\nodejs\node.exe"
-    wrangler_js   = os.path.join(dashboard_dir, "node_modules", "wrangler", "bin", "wrangler.js")
+    site_url = f"https://{project_name}.pages.dev"
 
-    if not os.path.exists(node_exe):
-        print(f"  [WARN] node.exe not found at {node_exe}")
-        return None
-    if not os.path.exists(wrangler_js):
-        print(f"  [WARN] wrangler.js not found at {wrangler_js}")
-        print(f"         Install with: npm install --prefix \"{dashboard_dir}\" wrangler@latest")
-        return None
+    # --- Try wrangler CLI first (most reliable) ---
+    # On Windows, prefer .cmd over .ps1 so subprocess can run it without execution policy issues
+    _npm_global = os.path.expandvars(r"%APPDATA%\npm")
+    wrangler_candidates = [
+        os.path.join(_npm_global, "wrangler.cmd"),                                                  # global npm (Windows)
+        os.path.join(_npm_global, "wrangler"),                                                       # global npm (Unix-like)
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_modules", ".bin", "wrangler.cmd"),  # local (Windows)
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_modules", ".bin", "wrangler"),      # local (Unix)
+        shutil.which("wrangler.cmd") or "",
+        shutil.which("wrangler") or "",
+    ]
+    wrangler_bin = next((p for p in wrangler_candidates if p and os.path.isfile(p)), None)
+    if wrangler_bin:
+        deploy_dir = tempfile.mkdtemp(prefix="cf_deploy_")
+        try:
+            shutil.copy(html_path, os.path.join(deploy_dir, "index.html"))
+            env = os.environ.copy()
+            env["CLOUDFLARE_API_TOKEN"] = api_token
+            res = subprocess.run(
+                [wrangler_bin, "pages", "deploy", deploy_dir,
+                 "--project-name", project_name, "--commit-dirty=true"],
+                capture_output=True, text=True, timeout=120, env=env
+            )
+            if res.returncode == 0:
+                print(f"  [OK] Cloudflare Pages deploy complete (wrangler) -> {site_url}")
+                return site_url
+            print(f"  [WARN] wrangler deploy failed: {(res.stdout + res.stderr)[:300]}")
+        finally:
+            shutil.rmtree(deploy_dir, ignore_errors=True)
+    else:
+        print(f"  [INFO] wrangler not found locally -- trying Direct Upload API")
 
-    deploy_dir = os.path.join(dashboard_dir, "deploy_tmp")
-    os.makedirs(deploy_dir, exist_ok=True)
-    shutil.copy2(html_path, os.path.join(deploy_dir, "index.html"))
+    # --- Fallback: Direct Upload API ---
+    with open(html_path, "rb") as f:
+        content = f.read()
 
-    env = os.environ.copy()
-    env["CLOUDFLARE_API_TOKEN"] = api_token
+    file_hash = hashlib.sha256(content).hexdigest()
+    manifest = json.dumps({"index.html": file_hash})
+    base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/pages/projects/{project_name}"
+    headers = {"Authorization": f"Bearer {api_token}"}
 
-    try:
-        result = subprocess.run(
-            [node_exe, wrangler_js,
-             "pages", "deploy", deploy_dir,
-             "--project-name", project_name,
-             "--branch", "main"],
-            capture_output=True, text=True,
-            timeout=120, env=env, cwd=dashboard_dir,
-            encoding="utf-8", errors="replace",
-        )
-        output = ((result.stdout or "") + (result.stderr or "")).strip()
-        if result.returncode == 0:
-            site_url = f"https://{project_name}.pages.dev"
+    # Step 1: POST manifest + file content as multipart
+    files = [
+        ("manifest", (None, manifest, "application/json")),
+        (file_hash, (None, content, "application/octet-stream")),
+    ]
+    r = requests.post(f"{base_url}/deployments", headers=headers, files=files, timeout=120)
+
+    if r.status_code in (200, 201):
+        data = r.json()
+        if data.get("success"):
+            # Verify the deployment is actually live (not a false-positive success)
+            result = data.get("result") or {}
+            dep_url = result.get("url", "")
+            if dep_url:
+                import time
+                time.sleep(3)
+                try:
+                    check = requests.get(dep_url, timeout=10)
+                    if check.status_code == 200:
+                        print(f"  [OK] Cloudflare Pages deploy complete -> {site_url}")
+                        return site_url
+                    print(f"  [WARN] Deploy reported success but preview URL returned {check.status_code}")
+                except Exception:
+                    pass
             print(f"  [OK] Cloudflare Pages deploy complete -> {site_url}")
-            for line in output.splitlines():
-                if "Deployment complete" in line or "peek over at" in line:
-                    print(f"       {line.strip()}")
             return site_url
-        else:
-            print(f"  [WARN] Cloudflare Pages deploy failed (exit {result.returncode})")
-            for line in output.splitlines()[-6:]:
-                if line.strip():
-                    print(f"         {line}")
-            return None
-    except subprocess.TimeoutExpired:
-        print("  [WARN] Cloudflare Pages deploy timed out (>120s)")
+        # Handle two-step: missing hashes + JWT
+        result = data.get("result") or {}
+        jwt = result.get("jwt")
+        missing = result.get("missing", [])
+        if jwt and missing:
+            up_r = requests.post(
+                "https://api.cloudflare.com/client/v4/pages/assets/upload",
+                headers={**headers, "Authorization": f"Bearer {jwt}"},
+                json=[{"key": file_hash, "value": content.decode("utf-8", errors="replace")}],
+                timeout=120,
+            )
+            if up_r.status_code in (200, 201):
+                r2 = requests.post(f"{base_url}/deployments", headers=headers, files=files, timeout=120)
+                if r2.status_code in (200, 201) and r2.json().get("success"):
+                    print(f"  [OK] Cloudflare Pages deploy complete -> {site_url}")
+                    return site_url
+
+    print(f"  [WARN] Cloudflare Pages deploy failed: HTTP {r.status_code} -- {r.text[:300]}")
+    return None
+
+
+def deploy_to_netlify(html_path, access_token, site_id):
+    """Deploy the dashboard HTML to Netlify as index.html.
+    This gives a persistent public URL (e.g. https://d-flector-dashboard.netlify.app)
+    that any team member can open directly in a browser -- no SharePoint restrictions.
+
+    Requires:
+        config.json -> netlify.access_token  (Personal Access Token from netlify.com)
+        config.json -> netlify.site_id       (Site ID from Site Settings on netlify.com)
+
+    Returns the live site URL string, or None on failure.
+    """
+    import io
+    import zipfile
+
+    # Build an in-memory ZIP containing index.html + _headers (forces text/html MIME type)
+    headers_content = "/\n  Content-Type: text/html; charset=UTF-8\n\n/index.html\n  Content-Type: text/html; charset=UTF-8\n"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(html_path, "index.html")
+        zf.writestr("_headers", headers_content)
+    buf.seek(0)
+    zip_bytes = buf.getvalue()
+
+    url = f"https://api.netlify.com/api/v1/sites/{site_id}/deploys"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/zip",
+    }
+
+    r = requests.post(url, headers=headers, data=zip_bytes, timeout=60)
+    if r.status_code in (200, 201):
+        data = r.json()
+        site_url = data.get("ssl_url") or data.get("url") or f"https://{site_id}.netlify.app"
+        print(f"  [OK] Netlify deploy complete -> {site_url}")
+        return site_url
+    else:
+        print(f"  [WARN] Netlify deploy failed: HTTP {r.status_code}")
+        print(f"         {r.text[:200]}")
         return None
-    except Exception as e:
-        print(f"  [WARN] Cloudflare Pages deploy error: {e}")
-        return None
-    finally:
-        shutil.rmtree(deploy_dir, ignore_errors=True)
+
+
+# ─────────────────────────────────────────────
+#  TEAMS WEBHOOK
+# ─────────────────────────────────────────────
+
+def post_teams_webhook(webhook_url, trade, stores_data, now, targets,
+                       dashboard_url, image_url=None):
+    """Post a rich Adaptive Card to a Teams incoming webhook.
+    Includes D-Flector MTD + Combined Retail hero metrics, store breakdown,
+    an optional snapshot image, and a button to open the full dashboard."""
+
+    total_retail        = sum(s.get("achieved", 0) for s in stores_data)
+    total_retail_target = sum(s.get("target",   0) for s in stores_data)
+    retail_pct  = total_retail / total_retail_target if total_retail_target else 0
+    trade_target = targets.get("dflector_trade", 250000)
+    trade_pct   = trade["total"] / trade_target if trade_target else 0
+
+    def fmt(v): return f"${v:,.0f}"
+
+    # ── Card body ──────────────────────────────────────────────────────────
+    body = []
+
+    # Optional hero snapshot image at the top
+    if image_url:
+        body.append({
+            "type": "Image",
+            "url": image_url,
+            "size": "Stretch",
+            "altText": "Daily Dashboard Snapshot",
+        })
+
+    # Header row
+    body.append({
+        "type": "ColumnSet",
+        "columns": [
+            {
+                "type": "Column", "width": "stretch",
+                "items": [{
+                    "type": "TextBlock",
+                    "text": f"📊  Daily Dashboard -- {now.strftime('%d %b %Y')}",
+                    "weight": "Bolder", "size": "Large", "color": "Accent",
+                }],
+            },
+            {
+                "type": "Column", "width": "auto",
+                "items": [{
+                    "type": "TextBlock",
+                    "text": now.strftime("%I:%M %p"),
+                    "color": "Good", "size": "Small", "horizontalAlignment": "Right",
+                }],
+            },
+        ],
+    })
+
+    # D-Flector + Retail side-by-side
+    body.append({
+        "type": "ColumnSet",
+        "columns": [
+            {
+                "type": "Column", "width": "stretch", "style": "emphasis",
+                "items": [
+                    {"type": "TextBlock", "text": "🏭  D-Flector Trade (MTD)",
+                     "weight": "Bolder", "size": "Medium"},
+                    {"type": "TextBlock", "text": fmt(trade["completed"]),
+                     "size": "ExtraLarge", "weight": "Bolder", "color": "Good",
+                     "spacing": "None"},
+                    {"type": "TextBlock",
+                     "text": f"Completed  •  {trade_pct:.0%} of {fmt(trade_target)} target",
+                     "color": "Good", "size": "Small", "spacing": "None"},
+                    {"type": "TextBlock", "text": f"Open: {fmt(trade['open'])}",
+                     "size": "Small", "spacing": "Small"},
+                    {"type": "TextBlock", "text": f"Total Pipeline: {fmt(trade['total'])}",
+                     "size": "Small", "spacing": "None"},
+                ],
+            },
+            {
+                "type": "Column", "width": "stretch", "style": "accent",
+                "items": [
+                    {"type": "TextBlock", "text": "🛒  Combined Retail",
+                     "weight": "Bolder", "size": "Medium"},
+                    {"type": "TextBlock", "text": fmt(total_retail),
+                     "size": "ExtraLarge", "weight": "Bolder", "color": "Accent",
+                     "spacing": "None"},
+                    {"type": "TextBlock",
+                     "text": f"31 days to T-1  •  {retail_pct:.0%} of {fmt(total_retail_target)} target",
+                     "color": "Accent", "size": "Small", "spacing": "None"},
+                    *[
+                        {"type": "TextBlock",
+                         "text": f"{s['name']}: {fmt(s['achieved'])}",
+                         "size": "Small", "spacing": "None"}
+                        for s in stores_data
+                    ],
+                ],
+            },
+        ],
+    })
+
+    # Separator
+    body.append({"type": "TextBlock", "text": " ", "spacing": "Small"})
+
+    card_payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": body,
+                "actions": [{
+                    "type": "Action.OpenUrl",
+                    "title": "📂  Open Full Dashboard",
+                    "url": dashboard_url or "about:blank",
+                }],
+            },
+        }],
+    }
+
+    r = requests.post(webhook_url, json=card_payload, timeout=30)
+    r.raise_for_status()
+    print(f"  [OK] Posted to Teams webhook")
+
+
+# ─────────────────────────────────────────────
+#  DASHBOARD HTML INJECTION
+# ─────────────────────────────────────────────
 
 def inject_data_into_html(html_path, dashboard_data):
     """Replace the DASHBOARD_DATA object in the HTML file with fresh data."""
@@ -878,9 +1214,7 @@ def inject_data_into_html(html_path, dashboard_data):
 
 def run_pipeline(config_path, dry_run=False):
     cfg = load_config(config_path)
-    from datetime import timezone as _tz
-    AEDT = _tz(timedelta(hours=11))  # UTC+11 AEDT year-round
-    now = datetime.now(AEDT).replace(tzinfo=None)
+    now = datetime.now()
     today = now.strftime("%Y-%m-%d")
     month_start = now.strftime("%Y-%m-01")
     # Retail stores (Zivor, AMS, ATS, TradeMe) use last 31 days ending T-1 (yesterday)
@@ -889,7 +1223,7 @@ def run_pipeline(config_path, dry_run=False):
     retail_start = (now - timedelta(days=32)).strftime("%Y-%m-%d")
     targets = cfg.get("targets", {})
 
-    print(f"[INFO] Running dashboard pipeline — {now.strftime('%d %b %Y, %I:%M %p')}")
+    print(f"[INFO] Running dashboard pipeline -- {now.strftime('%d %b %Y, %I:%M %p')}")
     print(f"[INFO] D-Flector date range: {month_start} to {today} (MTD + prior open orders)")
     print(f"[INFO] Retail date range: {retail_start} to {retail_end} (last 31 days, ends T-1)")
 
@@ -914,8 +1248,12 @@ def run_pipeline(config_path, dry_run=False):
         if i == 0:
             monthly_completed.append(trade["completed"])
         else:
-            m_data = unleashed.get_monthly_trade_data(d.year, d.month)
-            monthly_completed.append(m_data["completed"])
+            try:
+                m_data = unleashed.get_monthly_trade_data(d.year, d.month)
+                monthly_completed.append(m_data["completed"])
+            except Exception as _me:
+                print(f"  [WARN] Unleashed monthly data failed for {label}: {_me}")
+                monthly_completed.append(0)
             time.sleep(0.5)
 
     # ── 2. Neto (Zivor) ──
@@ -944,7 +1282,7 @@ def run_pipeline(config_path, dry_run=False):
     for brand_key, brand_name in [("ams", "AMS"), ("ats", "ATS")]:
         scfg = cfg.get("shopify", {}).get(brand_key, {})
         if not scfg.get("shop_url") or "YOUR_" in scfg.get("access_token", "YOUR_"):
-            print(f"  [SKIP] {brand_name} — not configured")
+            print(f"  [SKIP] {brand_name} -- not configured")
             continue
         try:
             shopify = ShopifyClient(scfg["shop_url"], scfg["access_token"], scfg.get("api_key"))
@@ -988,137 +1326,143 @@ def run_pipeline(config_path, dry_run=False):
         except Exception as e:
             print(f"  [ERROR] TradeMe failed: {e}")
     else:
-        print("  [SKIP] TradeMe — OAuth tokens not yet configured")
+        print("  [SKIP] TradeMe -- OAuth tokens not yet configured")
 
     # ── 4.5. eBay live metrics (feedback score, listings) ─────────────────
-    ebay_live = {}
+    ebay_live = {}  # Will hold metrics keyed by store: {"zivor": {...}, "ams": {...}, "ats": {...}}
     ecfg = cfg.get("ebay", {})
-    # Step [4.5]: eBay live metrics -- fetch per account
-    ebay_live_by_store = {}   # keyed by lowercase store name: zivor / ams / ats
-    smo = cfg.get("service_metrics_override", {})
+    stores_cfg = ecfg.get("stores", {})
+    _has_ebay = (
+        _EBAY_CLIENT_AVAILABLE
+        and stores_cfg
+        and not ecfg.get("sandbox_mode", False)
+    )
+    if _has_ebay:
+        print("\n[4.5] Fetching eBay live metrics (feedback, listings, performance)...")
+        listings_cache_dict = ecfg.get("listings_cache", {})
 
-    if _EBAY_CLIENT_AVAILABLE and not ecfg.get("sandbox_mode", False):
-        stores_cfg = ecfg.get("stores", {})
-        if not stores_cfg:
-            print("\n[4.5] eBay live metrics -- skipped (no stores in config)")
-        for store_key, store_cfg in stores_cfg.items():
-            token = store_cfg.get("access_token", "")
-            if not token:
-                print(f"\n  [{store_key.upper()}] No access_token in config -- skipping")
+        for store_key in ["zivor", "ams", "ats"]:
+            store_cfg = stores_cfg.get(store_key, {})
+            if not store_cfg.get("access_token"):
                 continue
-            print(f"\n[4.5] Fetching eBay live metrics for {store_key.upper()}...")
+
             try:
-                lc_raw = ecfg.get("listings_cache", {})
-                listings_cache = lc_raw.get(store_key, 0) if isinstance(lc_raw, dict) else 0
-                store_sm = smo.get(store_key, {})
+                print(f"  [{store_key.upper()}] Fetching metrics...")
                 ebay_cl = eBayClient(
                     app_id=ecfg["app_id"],
                     cert_id=ecfg["cert_id"],
-                    access_token=token,
+                    access_token=store_cfg["access_token"],
                     sandbox_mode=False,
                 )
-                # Zivor only: try live Seller Hub scrape (uses Chrome cookies)
+                # Get listings cache for this store
+                listings_cache = listings_cache_dict.get(store_key, 0) if isinstance(listings_cache_dict, dict) else 0
+                store_sm = cfg.get("service_metrics_override", {}).get(store_key, {})
+
+                # Only attempt live scrape for Zivor (single browser session)
                 if store_key == "zivor":
-                    print("  Attempting live Seller Hub scrape (browser_cookie3)...")
+                    print("    Attempting live Seller Hub scrape (browser_cookie3)...")
                     live_scraped = ebay_cl.fetch_performance_metrics_with_cookies()
                     if live_scraped:
                         merged_sm = {**store_sm, **live_scraped}
-                        cfg.setdefault("service_metrics_override", {})["zivor"] = merged_sm
+                        cfg.setdefault("service_metrics_override", {})[store_key] = merged_sm
                         try:
                             import json as _json
                             cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
                             with open(cfg_path, "w", encoding="utf-8") as _f:
                                 _json.dump(cfg, _f, indent=2, ensure_ascii=False)
-                            print("  Live metrics cached to config.json")
+                            print("    Live metrics cached to config.json")
                         except Exception as _ce:
-                            print(f"  [WARN] Could not update config.json: {_ce}")
+                            print(f"    [WARN] Could not update config.json: {_ce}")
                         store_sm = merged_sm
                     else:
-                        print("  Live scrape skipped -- using config.json fallback")
+                        print("    Live scrape skipped -- using config.json fallback values")
+
                 raw = ebay_cl.get_all_metrics(
                     listings_cache=listings_cache,
                     service_metrics=store_sm,
                 )
-                live = format_ebay_metrics_for_dashboard(raw)
-                ebay_live_by_store[store_key] = live
-                print(f"  Feedback:    {live['feedback_score']:,}  ({live['feedback_percent']}%)")
-                print(f"  Listings:    {live['listings']:,}")
-                print(f"  Seller Level: {live.get('seller_level','N/A')} -> projected {live.get('seller_level_projected','N/A')}")
-                print(f"  Defect: {live.get('defect_rate','n/a')}%  |  Late Ship: {live.get('late_ship_rate','n/a')}%  |  Cases: {live.get('cases_rate','n/a')}%")
-                print(f"  INAD: {live.get('inad_rate','n/a')}% ({live.get('inad_rating','n/a')})  |  INR: {live.get('inr_rate','n/a')}% ({live.get('inr_rating','n/a')})")
-                label_map = {"zivor": "Zivor", "ams": "AMS", "ats": "ATS"}
-                prefix = label_map.get(store_key, store_key.upper())
+                metrics = format_ebay_metrics_for_dashboard(raw)
+                ebay_live[store_key] = metrics
+
+                print(f"    Feedback:    {metrics['feedback_score']:,}  ({metrics['feedback_percent']}%)")
+                print(f"    Listings:    {metrics['listings']:,}  {'(from cache)' if listings_cache else '(API)'}")
+                print(f"    Seller Level: {metrics['seller_level']} -> projected {metrics['seller_level_projected']}")
+                print(f"    Defect: {metrics['defect_rate']}%  |  Late Ship: {metrics['late_ship_rate']}%  |  Cases: {metrics['cases_rate']}%")
+                print(f"    INAD: {metrics['inad_rate']}% ({metrics['inad_rating']})  |  INR: {metrics['inr_rate']}% ({metrics['inr_rating']})")
+
+                # Patch the store card with live rating + listing count
+                store_display_name = {
+                    "zivor": "Zivor (eBay)",
+                    "ams": "AMS (eBay)",
+                    "ats": "ATS (eBay)",
+                }.get(store_key)
+
                 for s in stores_data:
-                    if s["name"].startswith(prefix + " (eBay)"):
-                        s["rating"]   = live["rating"]
-                        s["listings"] = live["listings"]
+                    if s["name"] == store_display_name:
+                        s["rating"]   = metrics["rating"]
+                        s["listings"] = metrics["listings"]
                         break
+
             except Exception as e:
-                print(f"  [WARN] eBay live metrics failed for {store_key.upper()}: {e}")
-                import traceback; traceback.print_exc()
+                print(f"    [WARN] {store_key.upper()} metrics failed: {e}")
     else:
-        print("\n[4.5] eBay live metrics -- skipped (client unavailable or sandbox mode)")
+        print("\n[4.5] eBay live metrics -- skipped (no stores configured)")
 
-    # Legacy single-store reference kept for backward compat
-    ebay_live = ebay_live_by_store.get("zivor")
-
-    # ── 4.5b. eBay Sell Analytics API: live seller standards (OAuth tokens) ──
-    # Runs for any store where EBAY_OAUTH_REFRESH_<STORE> is set as a GitHub Secret.
-    # Exchanges the stored refresh token for a short-lived OAuth access token, then
-    # calls /sell/analytics/v1/seller_standards_profile (defect/late/cases/level)
-    # and /sell/analytics/v1/customer_service_metric_summary (INAD + INR).
-    # Results are merged into smo so the Build step below picks them up automatically.
-    oauth_refresh_tokens = {
-        "zivor": os.environ.get("EBAY_OAUTH_REFRESH_ZIVOR", ""),
-        "ams":   os.environ.get("EBAY_OAUTH_REFRESH_AMS",   ""),
-        "ats":   os.environ.get("EBAY_OAUTH_REFRESH_ATS",   ""),
-    }
-    for _store_key, _refresh_token in oauth_refresh_tokens.items():
-        if not _refresh_token:
-            continue
-        print(f"\n[4.5b] eBay Analytics API for {_store_key.upper()} ...")
-        try:
-            _store_cfg     = ecfg.get("stores", {}).get(_store_key, {})
-            _store_app_id  = _store_cfg.get("oauth_app_id")  or ecfg["app_id"]
-            _store_cert_id = _store_cfg.get("oauth_cert_id") or ecfg["cert_id"]
-            _oauth_token = eBayClient.refresh_oauth_access_token(
-                app_id=_store_app_id,
-                cert_id=_store_cert_id,
-                refresh_token=_refresh_token,
-            )
-            _analytics_cl = eBayClient(
-                app_id=_store_app_id,
-                cert_id=_store_cert_id,
-                access_token=_oauth_token,
-                sandbox_mode=False,
-            )
-            _live_standards = _analytics_cl.get_seller_standards_analytics()
-            if _live_standards:
-                smo.setdefault(_store_key, {}).update(_live_standards)
-                print(f"  [{_store_key.upper()}] Live standards merged OK")
-        except Exception as _e:
-            print(f"  [WARN] Analytics API failed for {_store_key.upper()}: {_e}")
-
-
-    # -- Build service metrics from eBay-channel stores --
+    # ── Build service metrics from eBay-channel stores ──
+    smo = cfg.get("service_metrics_override", {})
     for s in stores_data:
         if "(eBay)" in s["name"]:
             brand = s["name"].split(" (")[0]
             brand_key = brand.lower()
-            live = ebay_live_by_store.get(brand_key)
             override = smo.get(brand_key, {})
-            # Build entry: start with config override (has seller standards),
-            # then overlay with any non-empty live API values
-            entry = {"store": brand}
-            entry.update(override)
-            if live:
-                for k, v in live.items():
-                    if v is not None and v != "" and v != 0:
-                        entry[k] = v
-            # Legacy flat fields (backward compat)
-            entry["inad"]   = override.get("inad_count", override.get("inad", 0))
-            entry["inr"]    = override.get("inr_count",  override.get("inr",  0))
-            entry["orders"] = override.get("orders", override.get("defect_total", 0))
+            entry = {
+                "store":  brand,
+                # Legacy flat fields (backward compat)
+                "inad":   override.get("inad_count", override.get("inad", 0)),
+                "inr":    override.get("inr_count",  override.get("inr",  0)),
+                "orders": override.get("orders", override.get("defect_total", 0)),
+            }
+            # Enrich all eBay stores (Zivor, AMS, ATS) with full live metrics if available
+            if ebay_live and brand_key in ebay_live:
+                store_metrics = ebay_live[brand_key]
+                entry.update({
+                    "feedback_score":           store_metrics["feedback_score"],
+                    "feedback_percent":          store_metrics["feedback_percent"],
+                    "seller_level":              store_metrics["seller_level"],
+                    "seller_level_projected":    store_metrics["seller_level_projected"],
+                    "next_evaluation":           store_metrics["next_evaluation"],
+                    # Defect
+                    "defect_rate":               store_metrics["defect_rate"],
+                    "defect_count":              store_metrics["defect_count"],
+                    "defect_total":              store_metrics["defect_total"],
+                    "defect_threshold_top":      store_metrics["defect_threshold_top"],
+                    "defect_period":             store_metrics["defect_period"],
+                    # Late shipment
+                    "late_ship_rate":            store_metrics["late_ship_rate"],
+                    "late_ship_count":           store_metrics["late_ship_count"],
+                    "late_ship_total":           store_metrics["late_ship_total"],
+                    "late_ship_threshold_top":   store_metrics["late_ship_threshold_top"],
+                    "late_ship_period":          store_metrics["late_ship_period"],
+                    # Cases
+                    "cases_rate":                store_metrics["cases_rate"],
+                    "cases_count":               store_metrics["cases_count"],
+                    "cases_total":               store_metrics["cases_total"],
+                    "cases_threshold_top":       store_metrics["cases_threshold_top"],
+                    # INAD
+                    "inad_rate":                 store_metrics["inad_rate"],
+                    "inad_count":                store_metrics["inad_count"],
+                    "inad_total":                store_metrics["inad_total"],
+                    "inad_peer_rate":             store_metrics["inad_peer_rate"],
+                    "inad_rating":               store_metrics["inad_rating"],
+                    "inad_period":               store_metrics["inad_period"],
+                    # INR
+                    "inr_rate":                  store_metrics["inr_rate"],
+                    "inr_count":                 store_metrics["inr_count"],
+                    "inr_total":                 store_metrics["inr_total"],
+                    "inr_peer_rate":              store_metrics["inr_peer_rate"],
+                    "inr_rating":                store_metrics["inr_rating"],
+                    "inr_period":                store_metrics["inr_period"],
+                })
             service_metrics.append(entry)
 
     # ── Build dashboard data object ──
@@ -1129,15 +1473,24 @@ def run_pipeline(config_path, dry_run=False):
     prev_month_label = monthly_labels[-2] if len(monthly_labels) >= 2 else "Prev Month"
 
     # 7-day daily retail totals (T-7 to T-1) for Combined Retail mini chart
+    # Broken down by source so the chart can show a stacked Neto / Shopify / TradeMe view
     seven_day_labels = []
     seven_day_totals = []
+    seven_day_neto    = []
+    seven_day_shopify = []
+    seven_day_trademe = []
     for i in range(6, -1, -1):
         d = (now - timedelta(days=i + 1)).date()
         date_str = d.strftime("%Y-%m-%d")
         label = d.strftime("%a %d")
         seven_day_labels.append(label)
-        daily_total = sum(s.get("daily7d", {}).get(date_str, 0) for s in stores_data)
-        seven_day_totals.append(round(daily_total, 2))
+        neto_day    = sum(s.get("daily7d", {}).get(date_str, 0) for s in stores_data if s.get("source") == "neto")
+        shopify_day = sum(s.get("daily7d", {}).get(date_str, 0) for s in stores_data if s.get("source") == "shopify")
+        trademe_day = sum(s.get("daily7d", {}).get(date_str, 0) for s in stores_data if s.get("source") == "trademe")
+        seven_day_neto.append(round(neto_day, 2))
+        seven_day_shopify.append(round(shopify_day, 2))
+        seven_day_trademe.append(round(trademe_day, 2))
+        seven_day_totals.append(round(neto_day + shopify_day + trademe_day, 2))
 
     dashboard_data = {
         "lastUpdated": now.strftime("%d %b %Y, %I:%M %p"),
@@ -1161,6 +1514,9 @@ def run_pipeline(config_path, dry_run=False):
         "retail7d": {
             "labels": seven_day_labels,
             "totals": seven_day_totals,
+            "neto":    seven_day_neto,
+            "shopify": seven_day_shopify,
+            "trademe": seven_day_trademe,
         },
         "categories": {
             "labels": cat_labels,
@@ -1186,8 +1542,12 @@ def run_pipeline(config_path, dry_run=False):
     html_path = os.path.join(os.path.dirname(config_path), cfg.get("dashboard_path", "dashboard.html"))
     inject_data_into_html(html_path, dashboard_data)
 
-    print("\n[5] Publishing...")
-    # ── 5a. Deploy to Cloudflare Pages (browser-friendly public URL) ──────────
+    # ── 5. Generate hero snapshot image ──────────────────────────────────
+    print("\n[5/6] Publishing...")
+    image_path = os.path.join(os.path.dirname(config_path), "dashboard_snapshot.png")
+    generate_hero_image(trade, stores_data, now, targets, image_path)
+
+    # ── 6a. Deploy to Cloudflare Pages (primary browser-friendly URL) ────────
     cf_url = None
     cf_cfg = cfg.get("cloudflare", {})
     cf_token   = cf_cfg.get("api_token", "")
@@ -1199,14 +1559,39 @@ def run_pipeline(config_path, dry_run=False):
         except Exception as e:
             print(f"  [ERROR] Cloudflare Pages deploy failed: {e}")
     else:
-        print("  [SKIP] Cloudflare not configured — add api_token + account_id + project_name to config.json -> cloudflare")
+        # Fall back to Netlify
+        netlify_cfg = cfg.get("netlify", {})
+        n_token = netlify_cfg.get("access_token", "")
+        n_site  = netlify_cfg.get("site_id", "")
+        if n_token and n_site and "PASTE_YOUR" not in n_token and "PASTE_YOUR" not in n_site:
+            try:
+                cf_url = deploy_to_netlify(html_path, n_token, n_site)
+            except Exception as e:
+                print(f"  [ERROR] Netlify deploy failed: {e}")
+        else:
+            print("  [SKIP] No cloud deploy configured -- add cloudflare section to config.json")
 
-    # ── 5b. Copy to D-Flector Commercial SharePoint (backup / local access) ───────
-    dashboard_url = copy_to_onedrive(html_path)
+    # ── 6b. Copy to D-Flector Commercial SharePoint (backup / local access) ─
+    dashboard_url, image_url = copy_to_onedrive(html_path, image_path)
 
-    # Prefer Cloudflare URL as the authoritative link (opens directly in browser)
+    # Prefer Cloudflare Pages URL as the authoritative link (opens directly in browser)
     best_url = cf_url or dashboard_url
 
+    # ── 7. Post to Teams webhook ──────────────────────────────────────────
+    teams_cfg = cfg.get("teams", {})
+    webhook_url = teams_cfg.get("webhook_url", "")
+    if webhook_url and "PASTE_YOUR" not in webhook_url:
+        try:
+            post_teams_webhook(
+                webhook_url, trade, stores_data, now, targets,
+                dashboard_url=best_url or teams_cfg.get("dashboard_url", ""),
+                image_url=image_url,
+            )
+        except Exception as e:
+            print(f"  [ERROR] Teams webhook failed: {e}")
+            print("          Check your webhook URL in config.json -> teams.webhook_url")
+    else:
+        print("  [SKIP] Teams webhook not configured -- add webhook_url to config.json -> teams")
 
     if cf_url:
         print(f"\n  *** Share this link with your team: {cf_url} ***")
@@ -1233,4 +1618,3 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
-
