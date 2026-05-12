@@ -1295,6 +1295,7 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
         if cycle.get("evaluationDate"):
             result["next_evaluation"] = cycle["evaluationDate"][:10]
 
+        raw_metric_names = []
         for m in default_prog.get("metrics", []):
             name = (m.get("name") or "").upper()
             try:
@@ -1302,7 +1303,7 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
             except (ValueError, TypeError):
                 val = 0.0
 
-            if "DEFECT" in name:
+            if "DEFECT" in name or "TRANSACTION_DEFECT" in name:
                 result["defect_rate"] = val
                 for t in m.get("thresholds", []):
                     try:
@@ -1310,11 +1311,12 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
                                           float(str(t.get("upperThreshold") or t.get("value", 0.5)).rstrip("%")))
                     except Exception:
                         pass
-            elif "LATE_SHIPMENT" in name or "LATE_SHIP" in name:
+            elif "LATE" in name and ("SHIP" in name or "SHIPMENT" in name or "DELIVERY" in name):
                 result["late_ship_rate"] = val
             elif "CASE" in name or "BUYER_RESOLUTION" in name:
                 result["cases_rate"] = val
 
+        print(f"      [Analytics] Raw metric names from API: {raw_metric_names}")
         print(f"      [Analytics] Standards: level={result.get('seller_level')} "
               f"defect={result.get('defect_rate')}% "
               f"late={result.get('late_ship_rate')}% "
@@ -1325,7 +1327,7 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
     # ── 3. INAD (Item Not As Described) ──────────────────────────────────
     try:
         r = requests.get(
-            f"{base_url}/sell/analytics/v1/customer_service_metric/summary",
+            f"{base_url}/sell/analytics/v1/customer_service_metric_summary",
             headers=auth_headers,
             params={
                 "customer_service_metric_type": "ITEM_NOT_AS_DESCRIBED",
@@ -1364,7 +1366,7 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
     # ── 4. INR (Item Not Received) ────────────────────────────────────────
     try:
         r = requests.get(
-            f"{base_url}/sell/analytics/v1/customer_service_metric/summary",
+            f"{base_url}/sell/analytics/v1/customer_service_metric_summary",
             headers=auth_headers,
             params={
                 "customer_service_metric_type": "ITEM_NOT_RECEIVED",
