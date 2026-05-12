@@ -590,7 +590,8 @@ class eBayClient:
             },
             timeout=30,
         )
-        r.raise_for_status()
+        if not r.ok:
+            raise ValueError(f"eBay token refresh failed {r.status_code}: {r.text[:400]}")
         token = r.json().get("access_token", "")
         if not token:
             raise ValueError(f"No access_token in response: {r.text[:200]}")
