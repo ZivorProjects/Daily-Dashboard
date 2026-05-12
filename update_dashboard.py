@@ -1566,7 +1566,12 @@ def run_pipeline(config_path, dry_run=False):
                         refresh_token=refresh_token,
                     )
                     if live_analytics:
-                        store_sm = {**store_sm, **live_analytics}
+                        # Only use live API for INAD/INR — seller standards come from config.json (more accurate)
+            inad_inr_keys = {'inad_rate', 'inad_peer_rate', 'inad_rating',
+                             'inr_rate', 'inr_peer_rate', 'inr_rating'}
+            for _k in inad_inr_keys:
+                if _k in live_analytics:
+                    store_sm[_k] = live_analytics[_k]
                         print(f"    [{store_key.upper()}] Live standards merged OK")
                     else:
                         print(f"    [{store_key.upper()}] Analytics API returned no data — using config.json fallback")
