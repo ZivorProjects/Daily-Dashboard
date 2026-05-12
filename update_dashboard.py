@@ -1078,14 +1078,17 @@ def run_pipeline(config_path, dry_run=False):
             continue
         print(f"\n[4.5b] eBay Analytics API for {_store_key.upper()} ...")
         try:
+            _store_cfg    = ecfg.get("stores", {}).get(_store_key, {})
+            _store_app_id  = _store_cfg.get("oauth_app_id")  or ecfg["app_id"]
+            _store_cert_id = _store_cfg.get("oauth_cert_id") or ecfg["cert_id"]
             _oauth_token = eBayClient.refresh_oauth_access_token(
-                app_id=ecfg["app_id"],
-                cert_id=ecfg["cert_id"],
+                app_id=_store_app_id,
+                cert_id=_store_cert_id,
                 refresh_token=_refresh_token,
             )
             _analytics_cl = eBayClient(
-                app_id=ecfg["app_id"],
-                cert_id=ecfg["cert_id"],
+                app_id=_store_app_id,
+                cert_id=_store_cert_id,
                 access_token=_oauth_token,
                 sandbox_mode=False,
             )
