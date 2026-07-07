@@ -1232,10 +1232,12 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
             data={
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
-                "scope": (
-                    "https://api.ebay.com/oauth/api_scope/sell.analytics.readonly "
-                    "https://api.ebay.com/oauth/api_scope/sell.account.readonly"
-                ),
+                # Scope MUST be a subset of what the refresh token was granted
+                # (get_ebay_oauth_tokens.py mints them with sell.analytics.readonly only).
+                # Requesting a superset — e.g. adding sell.account.readonly — makes eBay
+                # reject the grant with HTTP 400. The analytics endpoints below only need
+                # sell.analytics.readonly.
+                "scope": "https://api.ebay.com/oauth/api_scope/sell.analytics.readonly",
             },
             timeout=30,
         )
@@ -1267,6 +1269,7 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
         )
         r.raise_for_status()
         data = r.json()
+        print(f"      [Analytics] Standards raw response: {json.dumps(data)[:1200]}")
 
         # The API returns a list of program objects — find EBAY_AU or the default
         programs = data.get("standardsProfiles") or data.get("programs") or []
@@ -1327,17 +1330,14 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
     # ── 3. INAD (Item Not As Described) ──────────────────────────────────
     try:
         r = requests.get(
-            f"{base_url}/sell/analytics/v1/customer_service_metric_summary",
+            f"{base_url}/sell/analytics/v1/customer_service_metric/ITEM_NOT_AS_DESCRIBED/CURRENT",
             headers=auth_headers,
-            params={
-                "customer_service_metric_type": "ITEM_NOT_AS_DESCRIBED",
-                "evaluation_marketplace_id": marketplace_id,
-                "evaluation_type": "CURRENT",
-            },
+            params={"evaluation_marketplace_id": marketplace_id},
             timeout=30,
         )
         r.raise_for_status()
         data = r.json()
+        print(f"      [Analytics] INAD raw response: {json.dumps(data)[:800]}")
         def _pct(v):
             try:
                 return round(float(str(v).rstrip("% ")), 2)
@@ -1366,17 +1366,14 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
     # ── 4. INR (Item Not Received) ────────────────────────────────────────
     try:
         r = requests.get(
-            f"{base_url}/sell/analytics/v1/customer_service_metric_summary",
+            f"{base_url}/sell/analytics/v1/customer_service_metric/ITEM_NOT_RECEIVED/CURRENT",
             headers=auth_headers,
-            params={
-                "customer_service_metric_type": "ITEM_NOT_RECEIVED",
-                "evaluation_marketplace_id": marketplace_id,
-                "evaluation_type": "CURRENT",
-            },
+            params={"evaluation_marketplace_id": marketplace_id},
             timeout=30,
         )
         r.raise_for_status()
         data = r.json()
+        print(f"      [Analytics] INR raw response: {json.dumps(data)[:800]}")
         def _pct(v):
             try:
                 return round(float(str(v).rstrip("% ")), 2)
