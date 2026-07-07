@@ -757,9 +757,16 @@ function fmtExact(n) {
 function fmtNum(n) { return n.toLocaleString(); }
 function pct(n) { return (n*100).toFixed(1) + '%'; }
 function trendArrow(v) {
-  if (v > 0.01) return '<span class="trend up">&#9650; ' + pct(Math.abs(v)) + '</span>';
-  if (v < -0.01) return '<span class="trend down">&#9660; ' + pct(Math.abs(v)) + '</span>';
+  // Cap the displayed magnitude at 999% so tiny-base outliers (e.g. +1094%) don't dominate the UI
+  const label = Math.abs(v) > 9.99 ? '&gt;999%' : pct(Math.abs(v));
+  if (v > 0.01) return '<span class="trend up">&#9650; ' + label + '</span>';
+  if (v < -0.01) return '<span class="trend down">&#9660; ' + label + '</span>';
   return '<span class="trend flat">&#8212; 0%</span>';
+}
+function cleanText(str) {
+  // Repair en/em-dash mojibake (UTF-8 bytes 0xE2 0x80 0x9x misdecoded as Windows-1252) -> en-dash
+  if (typeof str !== 'string') return str;
+  return str.replace(/â€[“”"]/g, '–');
 }
 
 function renderHero() {
@@ -940,14 +947,21 @@ function renderRatingsTable() {
 function renderServiceMetrics() {
   const tbody = document.querySelector('#serviceTable tbody');
   tbody.innerHTML = DASHBOARD_DATA.serviceMetrics.map(s=>{
-    const inadOk = s.inad < 0.01;
-    const inrOk = s.inr < 0.01;
+    // inad_rate / inr_rate are already expressed as percentages (e.g. 0.79 = 0.79%).
+    // Fall back to computing a rate from the raw INAD/INR counts over order volume if a rate isn't present.
+    const inadRate = (s.inad_rate != null) ? s.inad_rate
+                   : (s.orders ? (s.inad / s.orders) * 100 : null);
+    const inrRate  = (s.inr_rate  != null) ? s.inr_rate
+                   : (s.orders ? (s.inr  / s.orders) * 100 : null);
+    const inadOk = inadRate != null && inadRate < 1.0;   // under 1% is healthy
+    const inrOk  = inrRate  != null && inrRate  < 1.0;
     const status = inadOk&&inrOk ? 'excellent' : (inadOk||inrOk?'warning':'critical');
+    const fmtRate = r => r != null ? r.toFixed(2) + '%' : '–';
     return `<tr>
       <td>${s.store}</td>
-      <td class="num ${inadOk?'positive':'negative'}">${pct(s.inad)}</td>
-      <td class="num ${inrOk?'positive':'negative'}">${pct(s.inr)}</td>
-      <td class="num">${s.orders}</td>
+      <td class="num ${inadOk?'positive':'negative'}">${fmtRate(inadRate)}</td>
+      <td class="num ${inrOk?'positive':'negative'}">${fmtRate(inrRate)}</td>
+      <td class="num">${fmtNum(s.orders)}</td>
       <td><span class="status-dot ${status}"></span></td>
     </tr>`;
   }).join('');
@@ -1250,6 +1264,13 @@ function renderStoreTabs() {
 }
 
 // ===== INIT =====
+// Repair any en/em-dash mojibake in service-metric period strings before rendering
+(DASHBOARD_DATA.serviceMetrics || []).forEach(m => {
+  ['defect_period','late_ship_period','cases_period','inad_period','inr_period'].forEach(k => {
+    if (m[k]) m[k] = cleanText(m[k]);
+  });
+});
+
 document.getElementById('lastUpdate').textContent = DASHBOARD_DATA.lastUpdated;
 
 // Date range labels
