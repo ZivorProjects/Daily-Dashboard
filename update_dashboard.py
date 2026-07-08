@@ -1313,68 +1313,74 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
         cur = _select_profile(profiles, "CURRENT")
         proj = _select_profile(profiles, "PROJECTED")
 
-        if cur is None:
-            print("      [Analytics] No default-program CURRENT profile with metrics — "
+        # Extract defect / late-ship / cases RATE metrics from a profile.
+        # (Low-volume accounts sometimes return *_COUNT instead of *_RATE — those
+        # are skipped here and fall back to whatever the other cycle / config has.)
+        def _standards_rates(profile):
+            out = {}
+            if not profile:
+                return out
+            bk = {m.get("metricKey"): m for m in profile.get("metrics", [])}
+            for key, prefix, dflt_thr in (
+                ("DEFECTIVE_TRANSACTION_RATE", "defect", 0.5),
+                ("SHIPPING_MISS_RATE", "late_ship", 5.0),
+                ("CLAIMS_SAF_RATE", "cases", 0.3),
+            ):
+                m = bk.get(key)
+                if m is None:
+                    continue
+                rate = _num(m.get("value"))
+                if rate is None:
+                    continue
+                out[f"{prefix}_rate"] = rate
+                v = m.get("value")
+                if isinstance(v, dict):
+                    if v.get("numerator") is not None:
+                        out[f"{prefix}_count"] = v.get("numerator")
+                    if v.get("denominator") is not None:
+                        out[f"{prefix}_total"] = v.get("denominator")
+                tt = _num(m.get("thresholdUpperBound"))
+                out[f"{prefix}_threshold_top"] = tt if tt is not None else dflt_thr
+                out[f"{prefix}_period"] = _period(m)
+            return out
+
+        cur_rates = _standards_rates(cur)
+        proj_rates = _standards_rates(proj)
+
+        if cur is None and proj is None:
+            print("      [Analytics] No default-program profile with metrics — "
                   "seller standards left to config.json fallback")
         else:
-            raw_level = cur.get("standardsLevel", "")
-            if raw_level:
-                result["seller_level"] = level_map.get(raw_level, raw_level.replace("_", " ").title())
-            result["_program"] = cur.get("program", "")
-            by_key = {m.get("metricKey"): m for m in cur.get("metrics", [])}
+            # Current level from the CURRENT cycle; projected level from PROJECTED.
+            if cur is not None:
+                lvl = cur.get("standardsLevel", "")
+                if lvl:
+                    result["seller_level"] = level_map.get(lvl, lvl.replace("_", " ").title())
+                result["_program"] = cur.get("program", "")
+            if proj is not None:
+                plvl = proj.get("standardsLevel", "")
+                if plvl:
+                    result["seller_level_projected"] = level_map.get(plvl, plvl.replace("_", " ").title())
 
-            # Transaction defect rate — only usable when eBay returns it as a RATE
-            # (low-volume accounts get DEFECTIVE_TRANSACTION_COUNT, a bare count, instead).
-            defect = by_key.get("DEFECTIVE_TRANSACTION_RATE")
-            if defect is not None:
-                result["defect_rate"] = _num(defect.get("value"))
-                dv = defect.get("value")
-                if isinstance(dv, dict):
-                    result["defect_count"] = dv.get("numerator")
-                    result["defect_total"] = dv.get("denominator")
-                tt = _num(defect.get("thresholdUpperBound"))
-                if tt is not None:
-                    result["defect_threshold_top"] = tt
-                result["defect_period"] = _period(defect)
+            # eBay Seller Hub shows the "If we evaluated you today" (PROJECTED) rates,
+            # so prefer PROJECTED for the displayed defect/late/cases; fall back to the
+            # CURRENT cycle for anything the projected profile doesn't provide.
+            for k, v in {**cur_rates, **proj_rates}.items():
+                result[k] = v
 
-            late = by_key.get("SHIPPING_MISS_RATE")
-            if late is not None:
-                result["late_ship_rate"] = _num(late.get("value"))
-                lv = late.get("value")
-                if isinstance(lv, dict):
-                    result["late_ship_count"] = lv.get("numerator")
-                    result["late_ship_total"] = lv.get("denominator")
-                tt = _num(late.get("thresholdUpperBound"))
-                if tt is not None:
-                    result["late_ship_threshold_top"] = tt
-                result["late_ship_period"] = _period(late)
-
-            cases = by_key.get("CLAIMS_SAF_RATE")
-            if cases is not None:
-                result["cases_rate"] = _num(cases.get("value"))
-                cv = cases.get("value")
-                if isinstance(cv, dict):
-                    result["cases_count"] = cv.get("numerator")
-                    result["cases_total"] = cv.get("denominator")
-                tt = _num(cases.get("thresholdUpperBound"))
-                if tt is not None:
-                    result["cases_threshold_top"] = tt
+            # Next evaluation runs on the 20th of the projected cycle's month.
+            em = ((proj or {}).get("cycle") or {}).get("evaluationMonth", "")
+            ped = ((proj or {}).get("cycle") or {}).get("evaluationDate", "")
+            if em:
+                result["next_evaluation"] = f"{em}-20"
+            elif ped:
+                result["next_evaluation"] = ped[:10]
 
             print(f"      [Analytics] Standards: program={result.get('_program')} "
-                  f"level={result.get('seller_level')} defect={result.get('defect_rate')}% "
-                  f"late={result.get('late_ship_rate')}% cases={result.get('cases_rate')}%")
-
-        if proj is not None:
-            plvl = proj.get("standardsLevel", "")
-            if plvl:
-                result["seller_level_projected"] = level_map.get(plvl, plvl.replace("_", " ").title())
-            ped = (proj.get("cycle") or {}).get("evaluationDate", "")
-            if ped:
-                result["next_evaluation"] = ped[:10]
-        elif cur is not None:
-            ced = (cur.get("cycle") or {}).get("evaluationDate", "")
-            if ced:
-                result["next_evaluation"] = ced[:10]
+                  f"level={result.get('seller_level')}/proj {result.get('seller_level_projected')} "
+                  f"next={result.get('next_evaluation')} | "
+                  f"CURRENT defect={cur_rates.get('defect_rate')}% late={cur_rates.get('late_ship_rate')}% cases={cur_rates.get('cases_rate')}% "
+                  f"|| PROJECTED(shown) defect={proj_rates.get('defect_rate')}% late={proj_rates.get('late_ship_rate')}% cases={proj_rates.get('cases_rate')}%")
     except Exception as e:
         print(f"      [Analytics] Standards API error: {e}")
 
