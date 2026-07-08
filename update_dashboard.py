@@ -1260,7 +1260,45 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
     base_url = "https://api.ebay.com"
     result: dict = {}
 
+    level_map = {
+        "TOP_RATED": "Top Rated", "ABOVE_STANDARD": "Above Standard",
+        "STANDARD": "Standard", "BELOW_STANDARD": "Below Standard",
+    }
+
+    def _num(v):
+        """Coerce an eBay metric value to a float. Values are either a bare number
+        or {"value": "0.83", "numerator": 1, "denominator": 120} / {"value": "3.00"}."""
+        if isinstance(v, dict):
+            v = v.get("value")
+        try:
+            return round(float(str(v).rstrip("% ")), 2)
+        except (ValueError, TypeError):
+            return None
+
+    def _fmt_day(iso):
+        try:
+            return datetime.strptime(iso[:10], "%Y-%m-%d").strftime("%d %b %Y")
+        except Exception:
+            return ""
+
+    def _period(m):
+        s = _fmt_day(m.get("lookbackStartDate", ""))
+        e = _fmt_day(m.get("lookbackEndDate", ""))
+        return f"{s} – {e}" if s and e else ""
+
     # ── 2. Seller Standards Profile (defect rate, late ship, cases, seller level) ──
+    # eBay returns one profile per program (US/UK/DE/GLOBAL) x cycle (CURRENT/PROJECTED).
+    # The account's true standing is the profile flagged defaultProgram=true (e.g.
+    # PROGRAM_GLOBAL for AU sellers). Non-default profiles are marketplace slices
+    # (e.g. PROGRAM_US = US-only activity) and must NOT be used, or an AU seller's
+    # numbers would reflect a tiny unrepresentative slice.
+    def _select_profile(profiles, cycle_type):
+        cands = [p for p in profiles if (p.get("cycle") or {}).get("cycleType") == cycle_type]
+        for p in cands:
+            if p.get("defaultProgram") and p.get("metrics"):
+                return p
+        return None
+
     try:
         r = requests.get(
             f"{base_url}/sell/analytics/v1/seller_standards_profile",
@@ -1271,133 +1309,144 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
         data = r.json()
         print(f"      [Analytics] Standards raw response: {json.dumps(data)[:4000]}")
 
-        # The API returns a list of program objects — find EBAY_AU or the default
-        programs = data.get("standardsProfiles") or data.get("programs") or []
-        default_prog = None
-        for prog in programs:
-            if prog.get("evaluationMarketplaceId") == marketplace_id or prog.get("program") == marketplace_id:
-                default_prog = prog
-                break
-        if default_prog is None and programs:
-            default_prog = programs[0]
-        if default_prog is None:
-            default_prog = data.get("defaultProgram") or data
+        profiles = data.get("standardsProfiles") or data.get("programs") or []
+        cur = _select_profile(profiles, "CURRENT")
+        proj = _select_profile(profiles, "PROJECTED")
 
-        level_map = {
-            "TOP_RATED": "Top Rated",
-            "ABOVE_STANDARD": "Above Standard",
-            "STANDARD": "Standard",
-            "BELOW_STANDARD": "Below Standard",
-        }
-        raw_level = default_prog.get("standardsLevel") or default_prog.get("sellerStandardsLevel", "")
-        if raw_level:
-            result["seller_level"] = level_map.get(raw_level, raw_level.replace("_", " ").title())
-            result["seller_level_projected"] = result["seller_level"]
+        if cur is None:
+            print("      [Analytics] No default-program CURRENT profile with metrics — "
+                  "seller standards left to config.json fallback")
+        else:
+            raw_level = cur.get("standardsLevel", "")
+            if raw_level:
+                result["seller_level"] = level_map.get(raw_level, raw_level.replace("_", " ").title())
+            result["_program"] = cur.get("program", "")
+            by_key = {m.get("metricKey"): m for m in cur.get("metrics", [])}
 
-        cycle = default_prog.get("cycle") or {}
-        if cycle.get("evaluationDate"):
-            result["next_evaluation"] = cycle["evaluationDate"][:10]
+            # Transaction defect rate — only usable when eBay returns it as a RATE
+            # (low-volume accounts get DEFECTIVE_TRANSACTION_COUNT, a bare count, instead).
+            defect = by_key.get("DEFECTIVE_TRANSACTION_RATE")
+            if defect is not None:
+                result["defect_rate"] = _num(defect.get("value"))
+                dv = defect.get("value")
+                if isinstance(dv, dict):
+                    result["defect_count"] = dv.get("numerator")
+                    result["defect_total"] = dv.get("denominator")
+                tt = _num(defect.get("thresholdUpperBound"))
+                if tt is not None:
+                    result["defect_threshold_top"] = tt
+                result["defect_period"] = _period(defect)
 
-        raw_metric_names = []
-        for m in default_prog.get("metrics", []):
-            name = (m.get("name") or "").upper()
-            try:
-                val = float(str(m.get("value", "0")).rstrip("%"))
-            except (ValueError, TypeError):
-                val = 0.0
+            late = by_key.get("SHIPPING_MISS_RATE")
+            if late is not None:
+                result["late_ship_rate"] = _num(late.get("value"))
+                lv = late.get("value")
+                if isinstance(lv, dict):
+                    result["late_ship_count"] = lv.get("numerator")
+                    result["late_ship_total"] = lv.get("denominator")
+                tt = _num(late.get("thresholdUpperBound"))
+                if tt is not None:
+                    result["late_ship_threshold_top"] = tt
+                result["late_ship_period"] = _period(late)
 
-            if "DEFECT" in name or "TRANSACTION_DEFECT" in name:
-                result["defect_rate"] = val
-                for t in m.get("thresholds", []):
-                    try:
-                        result.setdefault("defect_threshold_top",
-                                          float(str(t.get("upperThreshold") or t.get("value", 0.5)).rstrip("%")))
-                    except Exception:
-                        pass
-            elif "LATE" in name and ("SHIP" in name or "SHIPMENT" in name or "DELIVERY" in name):
-                result["late_ship_rate"] = val
-            elif "CASE" in name or "BUYER_RESOLUTION" in name:
-                result["cases_rate"] = val
+            cases = by_key.get("CLAIMS_SAF_RATE")
+            if cases is not None:
+                result["cases_rate"] = _num(cases.get("value"))
+                cv = cases.get("value")
+                if isinstance(cv, dict):
+                    result["cases_count"] = cv.get("numerator")
+                    result["cases_total"] = cv.get("denominator")
+                tt = _num(cases.get("thresholdUpperBound"))
+                if tt is not None:
+                    result["cases_threshold_top"] = tt
 
-        print(f"      [Analytics] Raw metric names from API: {raw_metric_names}")
-        print(f"      [Analytics] Standards: level={result.get('seller_level')} "
-              f"defect={result.get('defect_rate')}% "
-              f"late={result.get('late_ship_rate')}% "
-              f"cases={result.get('cases_rate')}%")
+            print(f"      [Analytics] Standards: program={result.get('_program')} "
+                  f"level={result.get('seller_level')} defect={result.get('defect_rate')}% "
+                  f"late={result.get('late_ship_rate')}% cases={result.get('cases_rate')}%")
+
+        if proj is not None:
+            plvl = proj.get("standardsLevel", "")
+            if plvl:
+                result["seller_level_projected"] = level_map.get(plvl, plvl.replace("_", " ").title())
+            ped = (proj.get("cycle") or {}).get("evaluationDate", "")
+            if ped:
+                result["next_evaluation"] = ped[:10]
+        elif cur is not None:
+            ced = (cur.get("cycle") or {}).get("evaluationDate", "")
+            if ced:
+                result["next_evaluation"] = ced[:10]
     except Exception as e:
         print(f"      [Analytics] Standards API error: {e}")
 
-    # ── 3. INAD (Item Not As Described) ──────────────────────────────────
-    try:
-        r = requests.get(
-            f"{base_url}/sell/analytics/v1/customer_service_metric/ITEM_NOT_AS_DESCRIBED/CURRENT",
-            headers=auth_headers,
-            params={"evaluation_marketplace_id": marketplace_id},
-            timeout=30,
-        )
-        r.raise_for_status()
-        data = r.json()
-        print(f"      [Analytics] INAD raw response: {json.dumps(data)[:3000]}")
-        def _pct(v):
-            try:
-                return round(float(str(v).rstrip("% ")), 2)
-            except Exception:
-                return 0.0
-        if data.get("metricPercent") is not None:
-            result["inad_rate"] = _pct(data["metricPercent"])
-        if data.get("metricBenchmarkPercent") is not None:
-            result["inad_peer_rate"] = _pct(data["metricBenchmarkPercent"])
-        inad_rate = result.get("inad_rate", 0)
-        inad_peer = result.get("inad_peer_rate", 0)
-        if inad_peer > 0:
-            if inad_rate >= inad_peer * 2:
-                result["inad_rating"] = "Very High"
-            elif inad_rate >= inad_peer * 1.25:
-                result["inad_rating"] = "High"
-            elif inad_rate <= inad_peer * 0.75:
-                result["inad_rating"] = "Low"
-            else:
-                result["inad_rating"] = "Average"
-        print(f"      [Analytics] INAD: {result.get('inad_rate')}% "
-              f"(peer avg {result.get('inad_peer_rate')}%, rating={result.get('inad_rating')})")
-    except Exception as e:
-        print(f"      [Analytics] INAD API error: {e}")
+    # ── 3. Customer Service Metrics (INAD + INR) ──────────────────────────
+    # Response returns per-dimension breakdowns (LISTING_CATEGORY for INAD,
+    # SHIPPING_REGION for INR). eBay rates the seller on the ONE dimension that
+    # carries a real peer benchmark rating (primary category / DOMESTIC); every
+    # other dimension is NOT_APPLICABLE. That benchmarked dimension is the figure
+    # shown in Seller Hub, so we use it directly.
+    def _fetch_service_metric(metric_type, prefix):
+        try:
+            r = requests.get(
+                f"{base_url}/sell/analytics/v1/customer_service_metric/{metric_type}/CURRENT",
+                headers=auth_headers,
+                params={"evaluation_marketplace_id": marketplace_id},
+                timeout=30,
+            )
+            r.raise_for_status()
+            data = r.json()
+            print(f"      [Analytics] {prefix.upper()} raw response: {json.dumps(data)[:2000]}")
 
-    # ── 4. INR (Item Not Received) ────────────────────────────────────────
-    try:
-        r = requests.get(
-            f"{base_url}/sell/analytics/v1/customer_service_metric/ITEM_NOT_RECEIVED/CURRENT",
-            headers=auth_headers,
-            params={"evaluation_marketplace_id": marketplace_id},
-            timeout=30,
-        )
-        r.raise_for_status()
-        data = r.json()
-        print(f"      [Analytics] INR raw response: {json.dumps(data)[:3000]}")
-        def _pct(v):
+            def metric_of(dim, key):
+                for m in dim.get("metrics", []):
+                    if m.get("metricKey") == key:
+                        return m
+                return None
+
+            chosen = None
+            for dim in data.get("dimensionMetrics") or []:
+                rate_m = metric_of(dim, "RATE")
+                bench = (rate_m or {}).get("benchmark") or {}
+                rating = bench.get("rating", "NOT_APPLICABLE")
+                if rating and rating != "NOT_APPLICABLE":
+                    chosen = (dim, rate_m, bench, rating)
+                    break
+            if chosen is None:
+                print(f"      [Analytics] {prefix.upper()}: no peer-benchmarked dimension — config fallback")
+                return
+            dim, rate_m, bench, rating = chosen
+
+            rate = _num(rate_m.get("value"))
+            peer = _num((bench.get("metadata") or {}).get("average"))
+            if rate is not None:
+                result[f"{prefix}_rate"] = rate
+            if peer is not None:
+                result[f"{prefix}_peer_rate"] = peer
+            result[f"{prefix}_rating"] = rating.replace("_", " ").title()
+            cnt = metric_of(dim, "COUNT")
+            txn = metric_of(dim, "TRANSACTION_COUNT")
             try:
-                return round(float(str(v).rstrip("% ")), 2)
+                if cnt is not None:
+                    result[f"{prefix}_count"] = int(float(cnt.get("value", 0)))
+                if txn is not None:
+                    result[f"{prefix}_total"] = int(float(txn.get("value", 0)))
+            except (ValueError, TypeError):
+                pass
+            cyc = data.get("evaluationCycle") or {}
+            s = cyc.get("startDate", "")[:7]
+            e = cyc.get("endDate", "")[:7]
+            try:
+                fmt = lambda x: datetime.strptime(x, "%Y-%m").strftime("%b %Y") if x else ""
+                if s and e:
+                    result[f"{prefix}_period"] = f"{fmt(s)} – {fmt(e)}"
             except Exception:
-                return 0.0
-        if data.get("metricPercent") is not None:
-            result["inr_rate"] = _pct(data["metricPercent"])
-        if data.get("metricBenchmarkPercent") is not None:
-            result["inr_peer_rate"] = _pct(data["metricBenchmarkPercent"])
-        inr_rate = result.get("inr_rate", 0)
-        inr_peer = result.get("inr_peer_rate", 0)
-        if inr_peer > 0:
-            if inr_rate >= inr_peer * 2:
-                result["inr_rating"] = "Very High"
-            elif inr_rate >= inr_peer * 1.25:
-                result["inr_rating"] = "High"
-            elif inr_rate <= inr_peer * 0.75:
-                result["inr_rating"] = "Low"
-            else:
-                result["inr_rating"] = "Average"
-        print(f"      [Analytics] INR: {result.get('inr_rate')}% "
-              f"(peer avg {result.get('inr_peer_rate')}%, rating={result.get('inr_rating')})")
-    except Exception as e:
-        print(f"      [Analytics] INR API error: {e}")
+                pass
+            print(f"      [Analytics] {prefix.upper()}: {result.get(prefix+'_rate')}% "
+                  f"(peer {result.get(prefix+'_peer_rate')}%, {result.get(prefix+'_rating')})")
+        except Exception as e:
+            print(f"      [Analytics] {prefix.upper()} API error: {e}")
+
+    _fetch_service_metric("ITEM_NOT_AS_DESCRIBED", "inad")
+    _fetch_service_metric("ITEM_NOT_RECEIVED", "inr")
 
     return result
 
@@ -1568,13 +1617,25 @@ def run_pipeline(config_path, dry_run=False):
                         refresh_token=refresh_token,
                     )
                     if live_analytics:
-                        # Only use live API for INAD/INR — seller standards come from config.json
-                        inad_inr_keys = {'inad_rate', 'inad_peer_rate', 'inad_rating',
-                                         'inr_rate', 'inr_peer_rate', 'inr_rating'}
-                        for _k in inad_inr_keys:
-                            if _k in live_analytics:
-                                store_sm[_k] = live_analytics[_k]
-                        print(f"    [{store_key.upper()}] Live analytics merged (INAD/INR only)")
+                        # Merge every live field the Analytics API returned, overriding the
+                        # static config.json values. Seller standings (level/defect/late/cases)
+                        # only appear when a default-program profile with metrics was found;
+                        # INAD/INR only when a peer-benchmarked dimension was found — anything
+                        # missing simply falls back to config.json.
+                        live_keys = {
+                            'seller_level', 'seller_level_projected', 'next_evaluation',
+                            'defect_rate', 'defect_count', 'defect_total', 'defect_threshold_top', 'defect_period',
+                            'late_ship_rate', 'late_ship_count', 'late_ship_total', 'late_ship_threshold_top', 'late_ship_period',
+                            'cases_rate', 'cases_count', 'cases_total', 'cases_threshold_top',
+                            'inad_rate', 'inad_peer_rate', 'inad_rating', 'inad_count', 'inad_total', 'inad_period',
+                            'inr_rate', 'inr_peer_rate', 'inr_rating', 'inr_count', 'inr_total', 'inr_period',
+                        }
+                        merged = [k for k in live_keys if live_analytics.get(k) is not None]
+                        for _k in merged:
+                            store_sm[_k] = live_analytics[_k]
+                        print(f"    [{store_key.upper()}] Live analytics merged ({len(merged)} fields): "
+                              f"level={store_sm.get('seller_level')} defect={store_sm.get('defect_rate')}% "
+                              f"cases={store_sm.get('cases_rate')}% inad={store_sm.get('inad_rate')}% inr={store_sm.get('inr_rate')}%")
                     else:
                         print(f"    [{store_key.upper()}] Analytics API returned no data — using config.json fallback")
                 else:
