@@ -1269,7 +1269,7 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
         )
         r.raise_for_status()
         data = r.json()
-        print(f"      [Analytics] Standards raw response: {json.dumps(data)[:1200]}")
+        print(f"      [Analytics] Standards raw response: {json.dumps(data)[:4000]}")
 
         # The API returns a list of program objects — find EBAY_AU or the default
         programs = data.get("standardsProfiles") or data.get("programs") or []
@@ -1337,7 +1337,7 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
         )
         r.raise_for_status()
         data = r.json()
-        print(f"      [Analytics] INAD raw response: {json.dumps(data)[:800]}")
+        print(f"      [Analytics] INAD raw response: {json.dumps(data)[:3000]}")
         def _pct(v):
             try:
                 return round(float(str(v).rstrip("% ")), 2)
@@ -1373,7 +1373,7 @@ def _fetch_ebay_sell_analytics(app_id: str, cert_id: str, refresh_token: str,
         )
         r.raise_for_status()
         data = r.json()
-        print(f"      [Analytics] INR raw response: {json.dumps(data)[:800]}")
+        print(f"      [Analytics] INR raw response: {json.dumps(data)[:3000]}")
         def _pct(v):
             try:
                 return round(float(str(v).rstrip("% ")), 2)
@@ -1557,9 +1557,14 @@ def run_pipeline(config_path, dry_run=False):
                 refresh_token = os.environ.get(refresh_env, "")
                 if refresh_token:
                     print(f"    [4.5b] eBay Analytics API ({store_key.upper()})...")
+                    # Each store's refresh token was minted by that store's OWN eBay
+                    # developer app (see get_ebay_oauth_tokens.py). The token exchange's
+                    # Basic-auth credentials MUST match the app that minted the token, or
+                    # eBay returns 400 invalid_client. Use the per-store oauth app creds,
+                    # falling back to the shared app (Zivor's app == the shared one).
                     live_analytics = _fetch_ebay_sell_analytics(
-                        app_id=ecfg["app_id"],
-                        cert_id=ecfg["cert_id"],
+                        app_id=store_cfg.get("oauth_app_id") or ecfg["app_id"],
+                        cert_id=store_cfg.get("oauth_cert_id") or ecfg["cert_id"],
                         refresh_token=refresh_token,
                     )
                     if live_analytics:
