@@ -227,10 +227,27 @@ class UnleashedClient:
         }
 
         def _add_product_lines(order, bucket):
-            for line in (order.get("SalesOrderLines") or []):
+            lines = order.get("SalesOrderLines") or []
+            # An order's freight belongs to its stone-guard vehicle category, not
+            # Spare Parts. Determine the order's primary vehicle = the vehicle
+            # category carrying the most stone-guard value in the order.
+            veh_val = {}
+            for line in lines:
                 code = (line.get("Product", {}) or {}).get("ProductCode", "")
+                cat = product_category(code, base2cat)
+                if cat in ("Boat", "Caravan & Camper", "Jet Ski"):
+                    veh_val[cat] = veh_val.get(cat, 0) + float(line.get("LineTotal", 0) or 0)
+            primary_veh = max(veh_val, key=veh_val.get) if veh_val else None
+
+            for line in lines:
+                code = (line.get("Product", {}) or {}).get("ProductCode", "") or ""
                 val  = float(line.get("LineTotal", 0) or 0)
-                bucket[product_category(code, base2cat)] += val
+                cat  = product_category(code, base2cat)
+                # Freight rides with the order's stone guard (falls back to Spare
+                # Parts for spares-only orders with no stone guard).
+                if code.upper().startswith("FRGT") and primary_veh:
+                    cat = primary_veh
+                bucket[cat] += val
 
         for order in self.fetch_all_orders(fetch_start, end):
             status   = order.get("OrderStatus", "")

@@ -86,6 +86,10 @@ def build_adaptive_card(data):
                         "value": "AUD $" + "{:,.2f}".format(open_mtd)
                     },
                     {
+                        "title": "Total Value (Open + Completed)",
+                        "value": "AUD $" + "{:,.2f}".format(trade.get("totalMTD", completed + open_mtd))
+                    },
+                    {
                         "title": "Combined Retail (31 days)",
                         "value": "AUD $" + "{:,.2f}".format(retail_total)
                     },
