@@ -213,9 +213,9 @@ class UnleashedClient:
 
         totals = {
             "completed": 0.0, "open": 0.0,
-            "c_cats": {"Boat": 0.0, "Caravan": 0.0, "Jetski": 0.0, "Website": 0.0},
-            "o_cats": {"Boat": 0.0, "Caravan": 0.0, "Jetski": 0.0, "Website": 0.0},
-            "cats":   {"Boat": 0.0, "Caravan": 0.0, "Jetski": 0.0, "Website": 0.0},
+            "c_cats": {"B2B": 0.0, "Website": 0.0},
+            "o_cats": {"B2B": 0.0, "Website": 0.0},
+            "cats":   {"B2B": 0.0, "Website": 0.0},
         }
 
         for order in self.fetch_all_orders(fetch_start, end):
@@ -250,18 +250,16 @@ class UnleashedClient:
 
 
 def categorise_order(order):
-    """Categorise an Unleashed order into Boat/Caravan/Jetski/Website."""
-    lines = order.get("SalesOrderLines", [])
-    for line in lines:
-        code = (line.get("Product", {}).get("ProductCode", "") or "").upper()
-        if any(x in code for x in ["D4", "D5", "D6", "D7"]):
-            return "Boat"
-        if any(x in code for x in ["JET", "J100"]):
-            return "Jetski"
+    """Categorise an Unleashed order into Website or B2B by SalesOrderGroup.
+
+    Website = orders whose SalesOrderGroup is a web/online channel
+    (e.g. 'D-Flector Retail Web'). Everything else (Trade, Drop Ship, Retail
+    Outlet, Warranty, ...) is B2B.
+    """
     source = (order.get("SalesOrderGroup", "") or "").lower()
     if "web" in source or "online" in source:
         return "Website"
-    return "Caravan"
+    return "B2B"
 
 
 # ─────────────────────────────────────────────
@@ -1487,23 +1485,28 @@ def run_pipeline(config_path, dry_run=False):
     trade = unleashed.get_monthly_trade_data(now.year, now.month, include_prev_open=True)
     print(f"  Completed: AUD ${trade['completed']:,.2f} | Open: AUD ${trade['open']:,.2f} | Total: AUD ${trade['total']:,.2f}")
 
-    # Monthly history (last 10 months)
+    # Monthly history (last 10 months) — Total completed split into Website / B2B
     monthly_labels = []
     monthly_completed = []
+    monthly_website = []
+    monthly_b2b = []
     for i in range(9, -1, -1):
         d = now - timedelta(days=30 * i)
         label = d.strftime("%b %y")
         monthly_labels.append(label)
         if i == 0:
-            monthly_completed.append(trade["completed"])
+            m_data = trade
         else:
             try:
                 m_data = unleashed.get_monthly_trade_data(d.year, d.month)
-                monthly_completed.append(m_data["completed"])
             except Exception as _me:
                 print(f"  [WARN] Unleashed monthly data failed for {label}: {_me}")
-                monthly_completed.append(0)
+                m_data = {"completed": 0, "categories_completed": {}}
             time.sleep(0.5)
+        cc = m_data.get("categories_completed", {})
+        monthly_completed.append(m_data["completed"])
+        monthly_website.append(round(cc.get("Website", 0), 2))
+        monthly_b2b.append(round(cc.get("B2B", 0), 2))
 
     # ── 2. Neto (Zivor) ──
     print("\n[2/4] Fetching Neto data (Zivor eBay + Web)...")
@@ -1798,6 +1801,8 @@ def run_pipeline(config_path, dry_run=False):
             "monthlyHistory": {
                 "labels": monthly_labels,
                 "completed": monthly_completed,
+                "website": monthly_website,
+                "b2b": monthly_b2b,
             },
         },
         "retail7d": {

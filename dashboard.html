@@ -1041,22 +1041,27 @@ function renderCategoryPie() {
 
 function renderMonthlyTrend() {
   const t = DASHBOARD_DATA.trade.monthlyHistory;
+  const line = (label, data, color, fill) => ({
+    label, data: data || [],
+    borderColor: color,
+    backgroundColor: fill ? 'rgba(59,108,245,.08)' : 'transparent',
+    fill: !!fill, tension:.35, pointRadius:4, pointHoverRadius:6,
+    pointBackgroundColor:'#fff', pointBorderColor:color, pointBorderWidth:2,
+  });
   new Chart(document.getElementById('monthlyTrendChart'),{
     type:'line',
     data:{
       labels:t.labels,
-      datasets:[{
-        label:'Completed Sales',
-        data:t.completed,
-        borderColor:chartColors.accent,
-        backgroundColor:'rgba(59,108,245,.08)',
-        fill:true, tension:.35, pointRadius:5, pointHoverRadius:7,
-        pointBackgroundColor:'#fff', pointBorderColor:chartColors.accent, pointBorderWidth:2,
-      },{
-        label:'Monthly Target',
-        data:Array(t.labels.length).fill(DASHBOARD_DATA.trade.target),
-        borderColor:'rgba(220,38,38,.4)', borderDash:[8,4], pointRadius:0, fill:false, borderWidth:2,
-      }]
+      datasets:[
+        line('Total',   t.completed, chartColors.accent, true),
+        line('B2B',     t.b2b,       chartColors.green,  false),
+        line('Website', t.website,   chartColors.orange, false),
+        {
+          label:'Monthly Target',
+          data:Array(t.labels.length).fill(DASHBOARD_DATA.trade.target),
+          borderColor:'rgba(220,38,38,.4)', borderDash:[8,4], pointRadius:0, fill:false, borderWidth:2,
+        }
+      ]
     },
     options:chartDefaults
   });
