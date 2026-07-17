@@ -174,6 +174,27 @@ class UnleashedClient:
 
         return all_orders
 
+    def get_customer_type_map(self):
+        """Return {CustomerCode: CustomerType}, fetched once and cached. Uses the
+        /Customers/Page/{n} endpoint (the flat /Customers?page=N repeats page 1)."""
+        if getattr(self, "_cust_type_map", None) is not None:
+            return self._cust_type_map
+        code2type = {}
+        first = self._get("Customers/Page/1", {"pageSize": 200})
+        npages = first.get("Pagination", {}).get("NumberOfPages", 1)
+        for c in first.get("Items", []):
+            code2type[c.get("CustomerCode")] = c.get("CustomerType") or ""
+        for page in range(2, npages + 1):
+            try:
+                for c in self._get(f"Customers/Page/{page}", {"pageSize": 200}).get("Items", []):
+                    code2type[c.get("CustomerCode")] = c.get("CustomerType") or ""
+            except Exception as e:
+                print(f"  [WARN] Unleashed customers page {page} failed: {e}")
+            time.sleep(0.15)
+        self._cust_type_map = code2type
+        print(f"  [Unleashed] loaded {len(code2type)} customers for Website/B2B typing")
+        return code2type
+
     def get_monthly_trade_data(self, year, month, include_prev_open=False):
         """Compute completed and open trade order totals for a given month.
 
@@ -214,12 +235,17 @@ class UnleashedClient:
         if getattr(self, "_sg_map", None) is None:
             self._sg_map = _load_stone_guard_map()
         base2cat = self._sg_map
+        code2type = self.get_customer_type_map()
 
         totals = {
             "completed": 0.0, "open": 0.0,
             "c_cats": {"B2B": 0.0, "Website": 0.0},
             "o_cats": {"B2B": 0.0, "Website": 0.0},
             "cats":   {"B2B": 0.0, "Website": 0.0},
+            # Website/B2B split for the current month = orders PLACED this month
+            # that are Completed OR Parked (excludes Deleted). Drives the hero
+            # breakdown + the Category Split doughnut.
+            "chan_month": {"B2B": 0.0, "Website": 0.0},
             # Product categories (Boat / Caravan & Camper / Jet Ski / Spare Parts),
             # summed at line level from ProductCode.
             "p_c": {c: 0.0 for c in PRODUCT_CATEGORIES},
@@ -252,13 +278,18 @@ class UnleashedClient:
         for order in self.fetch_all_orders(fetch_start, end):
             status   = order.get("OrderStatus", "")
             subtotal = float(order.get("SubTotal", 0) or 0)
-            cat      = categorise_order(order)
+            cat      = categorise_order(order, code2type)
+            order_date = self._parse_date(order.get("OrderDate", ""))
+            placed_this_month = bool(order_date) and start <= order_date < end
+
+            # Website/B2B for the current month = placed this month, Completed or Parked.
+            if placed_this_month and status in ("Completed", "Parked"):
+                totals["chan_month"][cat] = totals["chan_month"].get(cat, 0) + subtotal
 
             if status == "Completed":
                 # ── Completed = orders PLACED (OrderDate) in the target month.
                 #    All values are SubTotal (GST-exclusive). ──
-                order_date = self._parse_date(order.get("OrderDate", ""))
-                if order_date and start <= order_date < end:
+                if placed_this_month:
                     totals["completed"]       += subtotal
                     totals["c_cats"][cat]      = totals["c_cats"].get(cat, 0) + subtotal
                     totals["cats"][cat]        = totals["cats"].get(cat, 0)   + subtotal
@@ -281,14 +312,19 @@ class UnleashedClient:
             "categories_total":     {k: round(v, 2) for k, v in totals["cats"].items()},
             "product_completed":    {k: round(v, 2) for k, v in totals["p_c"].items()},
             "product_open":         {k: round(v, 2) for k, v in totals["p_o"].items()},
+            "channel_month":        {k: round(v, 2) for k, v in totals["chan_month"].items()},
         }
 
 
-def categorise_order(order):
-    """Website vs B2B by OrderNumber prefix: any order numbered 'DFS-...' is a
-    website order; everything else (SO-... etc.) is B2B."""
-    num = str(order.get("OrderNumber", "") or "").upper()
-    return "Website" if num.startswith("DFS-") else "B2B"
+def categorise_order(order, code2type=None):
+    """Website vs B2B by the customer's CustomerType. Website = customers whose
+    CustomerType is 'Website Sale'; everything else = B2B. code2type maps
+    CustomerCode -> CustomerType (from UnleashedClient.get_customer_type_map).
+    (Matches the business's Unleashed figures; the DFS- order-number prefix is a
+    close approximation but misses ~a few SO-numbered website-customer orders.)"""
+    code = (order.get("Customer") or {}).get("CustomerCode")
+    ctype = (code2type or {}).get(code, "")
+    return "Website" if str(ctype).strip().lower() == "website sale" else "B2B"
 
 
 # Product-category labels for the Category Breakdown bar chart (order matters).
@@ -1879,6 +1915,13 @@ def run_pipeline(config_path, dry_run=False):
             "labels": PRODUCT_CATEGORIES,
             "completed": [trade.get("product_completed", {}).get(c, 0) for c in PRODUCT_CATEGORIES],
             "open": [trade.get("product_open", {}).get(c, 0) for c in PRODUCT_CATEGORIES],
+        },
+        # Website vs B2B for the current month (orders placed this month, Completed
+        # or Parked). Drives the hero breakdown + the Category Split doughnut.
+        "channelMonth": {
+            "labels": ["B2B", "Website"],
+            "values": [trade.get("channel_month", {}).get("B2B", 0),
+                       trade.get("channel_month", {}).get("Website", 0)],
         },
         "stores": [{
             "name": s["name"], "target": s["target"], "achieved": s["achieved"],

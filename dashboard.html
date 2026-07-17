@@ -813,11 +813,14 @@ function renderHero() {
         <span class="hero-sub">Open pipeline: <strong>${fmtExact(openOrders)}</strong></span>
       </div>
       <div class="hero-breakdown">
-        ${d.categories.labels.map((lbl,i)=> d.categories.completed[i]>0 ? `
+        ${(d.channelMonth ? d.channelMonth.labels : d.categories.labels).map((lbl,i)=> {
+          const v = d.channelMonth ? d.channelMonth.values[i] : d.categories.completed[i];
+          return v>0 ? `
           <div class="hero-breakdown-item">
             <span class="bd-label">${lbl}</span>
-            <span class="bd-value">${fmt(d.categories.completed[i])}</span>
-          </div>` : '').join('')}
+            <span class="bd-value">${fmt(v)}</span>
+          </div>` : '';
+        }).join('')}
       </div>
       ${prevMonthCompleted > 0 ? `
       <div class="hero-prev-month">
@@ -1031,7 +1034,8 @@ function renderCategoryChart() {
 }
 
 function renderCategoryPie() {
-  const c = DASHBOARD_DATA.categories;
+  const cm = DASHBOARD_DATA.channelMonth;
+  const c = cm ? {labels:cm.labels, total:cm.values} : DASHBOARD_DATA.categories;
   new Chart(document.getElementById('categoryPieChart'),{
     type:'doughnut',
     data:{
