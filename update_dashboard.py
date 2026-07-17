@@ -174,6 +174,30 @@ class UnleashedClient:
 
         return all_orders
 
+    def get_customer_type_map(self):
+        """Return {CustomerCode: CustomerType}, fetched once and cached.
+
+        Uses the /Customers/Page/{n} endpoint, which paginates correctly (the
+        flat /Customers?page=N call silently repeats page 1, like SalesOrders).
+        """
+        if getattr(self, "_cust_type_map", None) is not None:
+            return self._cust_type_map
+        code2type = {}
+        first = self._get("Customers/Page/1", {"pageSize": 200})
+        npages = first.get("Pagination", {}).get("NumberOfPages", 1)
+        for c in first.get("Items", []):
+            code2type[c.get("CustomerCode")] = c.get("CustomerType") or ""
+        for page in range(2, npages + 1):
+            try:
+                for c in self._get(f"Customers/Page/{page}", {"pageSize": 200}).get("Items", []):
+                    code2type[c.get("CustomerCode")] = c.get("CustomerType") or ""
+            except Exception as e:
+                print(f"  [WARN] Unleashed customers page {page} failed: {e}")
+            time.sleep(0.15)
+        self._cust_type_map = code2type
+        print(f"  [Unleashed] loaded {len(code2type)} customers for Website/B2B typing")
+        return code2type
+
     def get_monthly_trade_data(self, year, month, include_prev_open=False):
         """Compute completed and open trade order totals for a given month.
 
@@ -218,10 +242,11 @@ class UnleashedClient:
             "cats":   {"B2B": 0.0, "Website": 0.0},
         }
 
+        code2type = self.get_customer_type_map()
         for order in self.fetch_all_orders(fetch_start, end):
             status   = order.get("OrderStatus", "")
             subtotal = float(order.get("SubTotal", 0) or 0)
-            cat      = categorise_order(order)
+            cat      = categorise_order(order, code2type)
 
             if status == "Completed":
                 # ── Completed: CompletedDate in target month ──
@@ -249,15 +274,16 @@ class UnleashedClient:
         }
 
 
-def categorise_order(order):
-    """Categorise an Unleashed order into Website or B2B by SalesOrderGroup.
-
-    Website = orders whose SalesOrderGroup is a web/online channel
-    (e.g. 'D-Flector Retail Web'). Everything else (Trade, Drop Ship, Retail
-    Outlet, Warranty, ...) is B2B.
+def categorise_order(order, code2type=None):
+    """Categorise an Unleashed order into Website or B2B by the customer's
+    CustomerType. Website = customers whose CustomerType is 'Website Sale';
+    everything else (Caravan/Boat/Jet Ski dealers, manufacturers, cash, etc.)
+    is B2B. CustomerType lives on the customer record, so the caller passes a
+    {CustomerCode: CustomerType} map built via UnleashedClient.get_customer_type_map().
     """
-    source = (order.get("SalesOrderGroup", "") or "").lower()
-    if "web" in source or "online" in source:
+    code = (order.get("Customer") or {}).get("CustomerCode")
+    ctype = (code2type or {}).get(code, "")
+    if str(ctype).strip().lower() == "website sale":
         return "Website"
     return "B2B"
 
