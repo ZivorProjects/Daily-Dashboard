@@ -1,0 +1,6 @@
+{
+  "_comment": "Maps stone-guard base ProductCode -> vehicle category for the D-Flector 'Category Breakdown' bar chart. Match is on the base code (letters+digits, e.g. DSG045 matches DSG045-A-DF-BOX). ONLY stone guards belong here. Anything not listed (covers/CVR, bungees/BGE, U-bolts/UBT, brackets/BKT, mudflaps/MFP, spare-part kits/SPK, freight/FRGT, and any stone guard not yet mapped) is counted as 'Spare Parts'. Source: D-Flector Marine + Caravan product catalogs. To add a code, put its base (e.g. 'DSG038') under the right category.",
+  "Boat": ["DSG040", "DSG045", "DSG050", "DSG070"],
+  "Jet Ski": ["DSG046"],
+  "Caravan & Camper": ["DSG001", "DSG003", "DSG005", "DSG021", "DSG051", "DSG053", "DSG054", "DSG058", "DSG059", "DSG060"]
+}

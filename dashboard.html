@@ -1004,7 +1004,7 @@ const chartDefaults = {
 };
 
 function renderCategoryChart() {
-  const c = DASHBOARD_DATA.categories;
+  const c = DASHBOARD_DATA.productCategories || DASHBOARD_DATA.categories;
   new Chart(document.getElementById('categoryChart'),{
     type:'bar',
     data:{

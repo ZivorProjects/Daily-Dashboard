@@ -211,12 +211,26 @@ class UnleashedClient:
                 lb_y -= 1
         fetch_start = f"{lb_y}-{lb_m:02d}-01"
 
+        if getattr(self, "_sg_map", None) is None:
+            self._sg_map = _load_stone_guard_map()
+        base2cat = self._sg_map
+
         totals = {
             "completed": 0.0, "open": 0.0,
             "c_cats": {"B2B": 0.0, "Website": 0.0},
             "o_cats": {"B2B": 0.0, "Website": 0.0},
             "cats":   {"B2B": 0.0, "Website": 0.0},
+            # Product categories (Boat / Caravan & Camper / Jet Ski / Spare Parts),
+            # summed at line level from ProductCode.
+            "p_c": {c: 0.0 for c in PRODUCT_CATEGORIES},
+            "p_o": {c: 0.0 for c in PRODUCT_CATEGORIES},
         }
+
+        def _add_product_lines(order, bucket):
+            for line in (order.get("SalesOrderLines") or []):
+                code = (line.get("Product", {}) or {}).get("ProductCode", "")
+                val  = float(line.get("LineTotal", 0) or 0)
+                bucket[product_category(code, base2cat)] += val
 
         for order in self.fetch_all_orders(fetch_start, end):
             status   = order.get("OrderStatus", "")
@@ -230,6 +244,7 @@ class UnleashedClient:
                     totals["completed"]       += subtotal
                     totals["c_cats"][cat]      = totals["c_cats"].get(cat, 0) + subtotal
                     totals["cats"][cat]        = totals["cats"].get(cat, 0)   + subtotal
+                    _add_product_lines(order, totals["p_c"])
 
             elif status != "Deleted":
                 # ── Open: RequiredDate in open window (current + optional prev month) ──
@@ -238,6 +253,7 @@ class UnleashedClient:
                     totals["open"]         += subtotal
                     totals["o_cats"][cat]   = totals["o_cats"].get(cat, 0) + subtotal
                     totals["cats"][cat]     = totals["cats"].get(cat, 0)   + subtotal
+                    _add_product_lines(order, totals["p_o"])
 
         return {
             "completed": round(totals["completed"], 2),
@@ -246,6 +262,8 @@ class UnleashedClient:
             "categories_completed": {k: round(v, 2) for k, v in totals["c_cats"].items()},
             "categories_open":      {k: round(v, 2) for k, v in totals["o_cats"].items()},
             "categories_total":     {k: round(v, 2) for k, v in totals["cats"].items()},
+            "product_completed":    {k: round(v, 2) for k, v in totals["p_c"].items()},
+            "product_open":         {k: round(v, 2) for k, v in totals["p_o"].items()},
         }
 
 
@@ -254,6 +272,34 @@ def categorise_order(order):
     website order; everything else (SO-... etc.) is B2B."""
     num = str(order.get("OrderNumber", "") or "").upper()
     return "Website" if num.startswith("DFS-") else "B2B"
+
+
+# Product-category labels for the Category Breakdown bar chart (order matters).
+PRODUCT_CATEGORIES = ["Boat", "Caravan & Camper", "Jet Ski", "Spare Parts"]
+
+def _load_stone_guard_map():
+    """Load product_categories.json -> {BASE_CODE: category}. Only stone guards
+    are listed; everything else falls through to 'Spare Parts'."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "product_categories.json")
+    base2cat = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        for cat, codes in data.items():
+            if cat.startswith("_"):
+                continue
+            for code in codes:
+                base2cat[str(code).upper()] = cat
+    except Exception as e:
+        print(f"  [WARN] could not load product_categories.json: {e}")
+    return base2cat
+
+def product_category(product_code, base2cat):
+    """Return the vehicle category for a stone-guard product code, else 'Spare Parts'.
+    Matches on the base code (leading letters+digits), e.g. DSG045-A-DF-BOX -> DSG045."""
+    m = re.match(r"[A-Za-z]{1,4}\d{2,3}", str(product_code or ""))
+    base = m.group(0).upper() if m else ""
+    return base2cat.get(base, "Spare Parts")
 
 
 # ─────────────────────────────────────────────
@@ -1811,6 +1857,11 @@ def run_pipeline(config_path, dry_run=False):
             "completed": [trade["categories_completed"].get(c, 0) for c in cat_labels],
             "open": [trade["categories_open"].get(c, 0) for c in cat_labels],
             "total": [trade["categories_total"].get(c, 0) for c in cat_labels],
+        },
+        "productCategories": {
+            "labels": PRODUCT_CATEGORIES,
+            "completed": [trade.get("product_completed", {}).get(c, 0) for c in PRODUCT_CATEGORIES],
+            "open": [trade.get("product_open", {}).get(c, 0) for c in PRODUCT_CATEGORIES],
         },
         "stores": [{
             "name": s["name"], "target": s["target"], "achieved": s["achieved"],
