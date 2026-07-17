@@ -255,22 +255,22 @@ class UnleashedClient:
             cat      = categorise_order(order)
 
             if status == "Completed":
-                # ── Completed: CompletedDate in target month ──
-                comp_date = self._parse_date(order.get("CompletedDate", ""))
-                if comp_date and start <= comp_date < end:
+                # ── Completed = orders PLACED (OrderDate) in the target month.
+                #    All values are SubTotal (GST-exclusive). ──
+                order_date = self._parse_date(order.get("OrderDate", ""))
+                if order_date and start <= order_date < end:
                     totals["completed"]       += subtotal
                     totals["c_cats"][cat]      = totals["c_cats"].get(cat, 0) + subtotal
                     totals["cats"][cat]        = totals["cats"].get(cat, 0)   + subtotal
                     _add_product_lines(order, totals["p_c"])
 
             elif status != "Deleted":
-                # ── Open: RequiredDate in open window (current + optional prev month) ──
-                req_date = self._parse_date(order.get("RequiredDate", ""))
-                if req_date and open_start <= req_date < end:
-                    totals["open"]         += subtotal
-                    totals["o_cats"][cat]   = totals["o_cats"].get(cat, 0) + subtotal
-                    totals["cats"][cat]     = totals["cats"].get(cat, 0)   + subtotal
-                    _add_product_lines(order, totals["p_o"])
+                # ── Open pipeline = ALL currently-parked/open orders (no date
+                #    filter), SubTotal (GST-exclusive). ──
+                totals["open"]         += subtotal
+                totals["o_cats"][cat]   = totals["o_cats"].get(cat, 0) + subtotal
+                totals["cats"][cat]     = totals["cats"].get(cat, 0)   + subtotal
+                _add_product_lines(order, totals["p_o"])
 
         return {
             "completed": round(totals["completed"], 2),
@@ -1846,7 +1846,7 @@ def run_pipeline(config_path, dry_run=False):
         "currentMonth": now.strftime("%B %Y"),
         "currency": "AUD",
         "retailDateRange": f"{retail_start} to {retail_end} (Last 31 days, ends T-1)",
-        "tradeDateRange": f"{month_start} to {today} (MTD + prior open)",
+        "tradeDateRange": f"Completed: orders placed {month_start} to {today} · Open: all parked · ex-GST",
         "trade": {
             "target": targets.get("dflector_trade", 250000),
             "completedMTD": trade["completed"],
