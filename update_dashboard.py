@@ -709,6 +709,25 @@ class ShopifyClient:
 #  4. TRADEME API  (NZ Marketplace)
 # ─────────────────────────────────────────────
 
+def get_nzd_to_aud_rate():
+    """Fetch the current NZD->AUD exchange rate (free, no API key required).
+    Falls back to a conservative static estimate if the FX API is unreachable,
+    so a network hiccup never breaks the pipeline."""
+    try:
+        r = requests.get(
+            "https://api.frankfurter.app/latest",
+            params={"from": "NZD", "to": "AUD"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        rate = float(r.json()["rates"]["AUD"])
+        print(f"  [FX] NZD->AUD rate: {rate}")
+        return rate
+    except Exception as e:
+        print(f"  [WARN] NZD->AUD FX rate fetch failed ({e}); using fallback 0.92")
+        return 0.92
+
+
 class TradeMeClient:
     """Connects to TradeMe API (NZ marketplace) for Zivor NZ sales."""
 
@@ -806,6 +825,12 @@ class TradeMeClient:
         seven_days_ago = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         prev_week = (datetime.strptime(seven_days_ago, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
 
+        # TradeMe reports in NZD. Convert to AUD first, then remove the same 10%
+        # GST fraction applied to every other channel (per business direction: do
+        # NOT adjust for NZ's actual 15% GST rate -- just convert currency and
+        # keep the existing /1.1 so all channels use one consistent ex-tax basis).
+        fx_rate = get_nzd_to_aud_rate()
+
         total = 0
         rev_7d = 0
         rev_prev7d = 0
@@ -821,7 +846,8 @@ class TradeMeClient:
                 sold_date = self._parse_dotnet_date(item.get("SoldDate", ""))
                 if not sold_date:
                     continue
-                gross = float(item.get("SelectedBuyNowPrice", 0) or item.get("MaxBidAmount", 0) or 0)
+                gross_nzd = float(item.get("SelectedBuyNowPrice", 0) or item.get("MaxBidAmount", 0) or 0)
+                gross = gross_nzd * fx_rate
                 qty = int(item.get("QuantitySold", 1) or 1)
                 subtotal = round(gross / 1.1, 2) * qty
                 if month_start <= sold_date <= today:
