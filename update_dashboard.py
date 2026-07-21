@@ -607,8 +607,9 @@ class ShopifyClient:
                 continue
             if o.get("cancelled_at"):  # Order was cancelled
                 continue
-            # subtotal_price is already ex-GST in Shopify (line items before tax)
-            subtotal = float(o.get("subtotal_price", 0))
+            # AU Shopify stores are tax-inclusive, so subtotal_price INCLUDES GST.
+            # Divide by 1.1 for ex-GST, consistent with Neto/TradeMe.
+            subtotal = float(o.get("subtotal_price", 0)) / 1.1  # ex-GST (AU Shopify prices are GST-inclusive)
             source = (o.get("source_name", "") or "").lower()
             tags = (o.get("tags", "") or "").lower()
 
@@ -629,7 +630,7 @@ class ShopifyClient:
                 continue
             if o.get("cancelled_at"):
                 continue
-            subtotal = float(o.get("subtotal_price", 0))
+            subtotal = float(o.get("subtotal_price", 0)) / 1.1  # ex-GST (AU Shopify prices are GST-inclusive)
             source = (o.get("source_name", "") or "").lower()
             tags = (o.get("tags", "") or "").lower()
             created = o.get("created_at", "")[:10]
@@ -669,7 +670,7 @@ class ShopifyClient:
                 created = raw_ts[:10]
             if not created or created < seven_days_ago or created > today:
                 continue
-            subtotal = float(o.get("subtotal_price", 0))
+            subtotal = float(o.get("subtotal_price", 0)) / 1.1  # ex-GST (AU Shopify prices are GST-inclusive)
             source = (o.get("source_name", "") or "").lower()
             tags = (o.get("tags", "") or "").lower()
             if "ebay" in source or "ebay" in tags:
