@@ -853,6 +853,9 @@ function renderHero() {
           <span class="bd-value">${fmt(trademeTotal)}</span>
         </div>
       </div>
+      <div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.4px;margin-top:14px;margin-bottom:2px">
+        Combined daily — last 7 days <span style="font-weight:400;text-transform:none">(Neto + Shopify + TradeMe)</span>
+      </div>
       <div class="retail-mini-chart">
         <canvas id="retailMiniChart"></canvas>
       </div>
@@ -1258,8 +1261,13 @@ function renderRetailMiniChart() {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: ctx => 'AUD $' + ctx.raw.toLocaleString('en-AU', {minimumFractionDigits:0, maximumFractionDigits:0})
+            label: ctx => 'Combined: AUD $' + ctx.raw.toLocaleString('en-AU', {minimumFractionDigits:0, maximumFractionDigits:0})
           }
+        },
+        datalabels: {
+          display: true, anchor: 'end', align: 'end', offset: 0,
+          color: 'rgba(107,113,148,0.95)', font: { size: 8, weight: '700', family: 'Inter' },
+          formatter: v => v > 0 ? '$' + (v/1000).toFixed(1) + 'K' : ''
         }
       },
       scales: {
