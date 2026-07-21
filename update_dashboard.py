@@ -384,10 +384,14 @@ class NetoClient:
 
     def get_orders(self, date_from, date_to, page=0, limit=200):
         """Fetch orders within a date range."""
+        # Neto reads a bare 'YYYY-MM-DD' DatePlacedTo as 00:00:00, which excludes
+        # the entire end day (T-1) — so the most recent day's Neto sales were being
+        # dropped from both the daily chart and the 31-day total. Extend to end-of-day.
+        date_to_incl = f"{date_to} 23:59:59" if len(str(date_to)) == 10 else date_to
         body = {
             "Filter": {
                 "DatePlacedFrom": date_from,
-                "DatePlacedTo": date_to,
+                "DatePlacedTo": date_to_incl,
                 "OrderStatus": ["New", "Pick", "Pack", "Dispatched", "On Hold"],
                 "Page": page,
                 "Limit": limit,
