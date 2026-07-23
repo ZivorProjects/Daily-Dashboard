@@ -198,14 +198,18 @@ class UnleashedClient:
     def get_monthly_trade_data(self, year, month, include_prev_open=False):
         """Compute completed and open trade order totals for a given month.
 
-        Completed : Status = 'Completed'  AND  CompletedDate within target month.
+        Completed : Status = 'Completed'  AND  CompletedDate within target month
+                    (NOT OrderDate -- an order can be placed in an earlier month
+                    and complete later; median lag ~4 days, observed up to ~4.7
+                    months in historical data).
 
-        Open      : Status ≠ 'Completed'  AND  Status ≠ 'Deleted'
-                    AND  RequiredDate within the target month  OR  (when
-                    include_prev_open=True) also the immediately preceding month.
+        Open      : Status not in ('Completed', 'Deleted') -- i.e. all currently
+                    parked/open orders, with no date filter (include_prev_open is
+                    accepted for backward compatibility but no longer changes
+                    this behaviour).
 
-        A 12-month OrderDate window is fetched so orders placed earlier but
-        completed or required in the target window are correctly captured.
+        A 6-month OrderDate look-back window is fetched so orders placed earlier
+        but completed within the target month are correctly captured.
         """
         # ── Target month boundaries ──────────────────────────────────────────────
         start = f"{year}-{month:02d}-01"
@@ -221,11 +225,13 @@ class UnleashedClient:
         else:
             open_start = start
 
-        # ── Fetch: 3 months back by OrderDate (for open orders scope) ───────────
-        # Completed orders also benefit from a broader look-back, but 3 months
-        # keeps the open order pool scoped to recent activity as requested.
+        # ── Fetch: 6 months back by OrderDate ────────────────────────────────────
+        # "Completed" is filtered by CompletedDate, not OrderDate -- an order can be
+        # placed well before it completes (observed lag up to ~4.7 months in
+        # historical data), so the fetch window must reach back far enough to catch
+        # orders placed earlier that complete within the target month.
         lb_y, lb_m = year, month
-        for _ in range(3):
+        for _ in range(6):
             lb_m -= 1
             if lb_m <= 0:
                 lb_m += 12
@@ -242,10 +248,6 @@ class UnleashedClient:
             "c_cats": {"B2B": 0.0, "Website": 0.0},
             "o_cats": {"B2B": 0.0, "Website": 0.0},
             "cats":   {"B2B": 0.0, "Website": 0.0},
-            # Website/B2B split for the current month = orders PLACED this month
-            # that are Completed OR Parked (excludes Deleted). Drives the hero
-            # breakdown + the Category Split doughnut.
-            "chan_month": {"B2B": 0.0, "Website": 0.0},
             # Product categories (Boat / Caravan & Camper / Jet Ski / Spare Parts),
             # summed at line level from ProductCode.
             "p_c": {c: 0.0 for c in PRODUCT_CATEGORIES},
@@ -279,17 +281,13 @@ class UnleashedClient:
             status   = order.get("OrderStatus", "")
             subtotal = float(order.get("SubTotal", 0) or 0)
             cat      = categorise_order(order, code2type)
-            order_date = self._parse_date(order.get("OrderDate", ""))
-            placed_this_month = bool(order_date) and start <= order_date < end
-
-            # Website/B2B for the current month = placed this month, Completed or Parked.
-            if placed_this_month and status in ("Completed", "Parked"):
-                totals["chan_month"][cat] = totals["chan_month"].get(cat, 0) + subtotal
 
             if status == "Completed":
-                # ── Completed = orders PLACED (OrderDate) in the target month.
-                #    All values are SubTotal (GST-exclusive). ──
-                if placed_this_month:
+                # ── Completed = orders whose CompletedDate falls in the target
+                #    month (NOT OrderDate/placed date -- an order can be placed in
+                #    an earlier month and complete later). SubTotal (GST-exclusive).
+                comp_date = self._parse_date(order.get("CompletedDate", ""))
+                if comp_date and start <= comp_date < end:
                     totals["completed"]       += subtotal
                     totals["c_cats"][cat]      = totals["c_cats"].get(cat, 0) + subtotal
                     totals["cats"][cat]        = totals["cats"].get(cat, 0)   + subtotal
@@ -312,7 +310,6 @@ class UnleashedClient:
             "categories_total":     {k: round(v, 2) for k, v in totals["cats"].items()},
             "product_completed":    {k: round(v, 2) for k, v in totals["p_c"].items()},
             "product_open":         {k: round(v, 2) for k, v in totals["p_o"].items()},
-            "channel_month":        {k: round(v, 2) for k, v in totals["chan_month"].items()},
         }
 
 
@@ -1946,13 +1943,6 @@ def run_pipeline(config_path, dry_run=False):
             "labels": PRODUCT_CATEGORIES,
             "completed": [trade.get("product_completed", {}).get(c, 0) for c in PRODUCT_CATEGORIES],
             "open": [trade.get("product_open", {}).get(c, 0) for c in PRODUCT_CATEGORIES],
-        },
-        # Website vs B2B for the current month (orders placed this month, Completed
-        # or Parked). Drives the hero breakdown + the Category Split doughnut.
-        "channelMonth": {
-            "labels": ["B2B", "Website"],
-            "values": [trade.get("channel_month", {}).get("B2B", 0),
-                       trade.get("channel_month", {}).get("Website", 0)],
         },
         "stores": [{
             "name": s["name"], "target": s["target"], "achieved": s["achieved"],
