@@ -283,6 +283,7 @@ class UnleashedClient:
 
         def _add_backlog_lines(order):
             order_date = self._parse_date(order.get("OrderDate", ""))
+            required_date = self._parse_date(order.get("RequiredDate", ""))
             order_num = order.get("OrderNumber", "")
             for line in (order.get("SalesOrderLines") or []):
                 product = line.get("Product", {}) or {}
@@ -298,12 +299,16 @@ class UnleashedClient:
                     "description": product.get("ProductDescription", "") or "",
                     "qty": 0.0,
                     "oldest_date": order_date,
+                    "required_date": required_date,  # RequiredDate of the oldest-order line
                     "orders": set(),
                 })
                 entry["qty"] += qty
                 entry["orders"].add(order_num)
+                # Keep RequiredDate paired with whichever order currently holds the
+                # oldest OrderDate, so the two dates shown always describe the same order.
                 if order_date and (not entry["oldest_date"] or order_date < entry["oldest_date"]):
                     entry["oldest_date"] = order_date
+                    entry["required_date"] = required_date
 
         for order in self.fetch_all_orders(fetch_start, end):
             status   = order.get("OrderStatus", "")
@@ -330,9 +335,9 @@ class UnleashedClient:
                 _add_product_lines(order, totals["p_o"])
                 _add_backlog_lines(order)
 
-        # Serialize backlog: {category: [ {code, description, qty, oldestDate,
-        # orders}, ... ]}, sorted oldest-order-first within each category so the
-        # longest-outstanding backorders surface at the top.
+        # Serialize backlog: {category: [ {code, description, qty, requiredDate,
+        # oldestDate, orders}, ... ]}, sorted oldest-order-first within each
+        # category so the longest-outstanding backorders surface at the top.
         open_backlog = {}
         for veh_cat, codes in totals["backlog"].items():
             rows = [
@@ -340,6 +345,7 @@ class UnleashedClient:
                     "code": code,
                     "description": e["description"],
                     "qty": int(e["qty"]) if e["qty"] == int(e["qty"]) else round(e["qty"], 2),
+                    "requiredDate": e.get("required_date") or "",
                     "oldestDate": e["oldest_date"] or "",
                     "orders": len(e["orders"]),
                 }
