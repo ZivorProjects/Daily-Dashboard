@@ -379,6 +379,10 @@ body {
   </div>
 </div>
 
+<!-- ═══ OPEN ORDER BACKLOG BY PRODUCT ═══ -->
+<div class="section-title">Open Order Backlog by Product <span class="section-subtitle">— however old, oldest first</span></div>
+<div class="grid-3" id="backlogGrid" style="margin-bottom:20px"></div>
+
 <!-- ═══ INDIVIDUAL STORES ═══ -->
 <div class="section-title">Individual Stores <span class="section-subtitle" id="retailDateLabel"></span></div>
 <div class="store-cards-grid" id="storeCards"></div>
@@ -992,6 +996,50 @@ function renderSupplierTable() {
     </tr>`).join('');
 }
 
+function renderOpenBacklog() {
+  const el = document.getElementById('backlogGrid');
+  if (!el) return;
+  const backlog = DASHBOARD_DATA.openBacklog || {};
+  const cats = ['Boat', 'Caravan & Camper', 'Jet Ski'];
+
+  const ageClass = age => age == null ? '' : age > 30 ? 'critical' : age > 14 ? 'warning' : 'good';
+  const ageColor = cls => cls === 'critical' ? 'var(--red)' : cls === 'warning' ? 'var(--orange)' : 'var(--green)';
+  const fmtAge = age => age == null ? '–' : age === 0 ? 'Today' : `${age}d`;
+  const fmtDate = iso => {
+    if (!iso) return '–';
+    const d = new Date(iso + 'T00:00:00');
+    return isNaN(d) ? iso : d.toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: '2-digit' });
+  };
+
+  el.innerHTML = cats.map(cat => {
+    const rows = backlog[cat] || [];
+    const totalQty = rows.reduce((s, r) => s + (r.qty || 0), 0);
+    const body = rows.length
+      ? rows.map(r => `
+        <tr>
+          <td>
+            <div style="font-weight:600;font-size:12px">${r.code}</div>
+            <div style="font-size:10px;color:var(--text-dim)">${r.description || ''}</div>
+          </td>
+          <td class="num">${fmtNum(r.qty)}</td>
+          <td class="num">
+            <div>${fmtDate(r.oldestDate)}</div>
+            <div style="font-size:11px;font-weight:700;color:${ageColor(ageClass(r.age))}">${fmtAge(r.age)}</div>
+          </td>
+        </tr>`).join('')
+      : `<tr><td colspan="3" style="text-align:center;color:var(--text-dim);padding:20px;font-size:12px">No open orders</td></tr>`;
+    return `
+      <div class="card">
+        <div class="card-title">${cat}${rows.length ? ` <span class="pill">${fmtNum(totalQty)} units</span>` : ''}</div>
+        <table class="tbl">
+          <thead><tr><th>Product</th><th class="num">Open Qty</th><th class="num">Oldest Order</th></tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+        <div class="data-src">Source: Unleashed ERP — oldest order first</div>
+      </div>`;
+  }).join('');
+}
+
 // ===== CHARTS =====
 
 const chartColors = {
@@ -1332,6 +1380,7 @@ renderStoreCards();
 renderRatingsTable();
 renderServiceMetrics();
 renderSupplierTable();
+renderOpenBacklog();
 renderCategoryChart();
 renderCategoryPie();
 renderMonthlyTrend();

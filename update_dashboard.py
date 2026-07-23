@@ -252,6 +252,10 @@ class UnleashedClient:
             # summed at line level from ProductCode.
             "p_c": {c: 0.0 for c in PRODUCT_CATEGORIES},
             "p_o": {c: 0.0 for c in PRODUCT_CATEGORIES},
+            # Open-order backlog by specific product code, for the vehicle
+            # categories only (Boat / Caravan & Camper / Jet Ski) -- keyed by
+            # {category: {product_code: {description, qty, oldest_date, orders}}}.
+            "backlog": {"Boat": {}, "Caravan & Camper": {}, "Jet Ski": {}},
         }
 
         def _add_product_lines(order, bucket):
@@ -277,6 +281,30 @@ class UnleashedClient:
                     cat = primary_veh
                 bucket[cat] += val
 
+        def _add_backlog_lines(order):
+            order_date = self._parse_date(order.get("OrderDate", ""))
+            order_num = order.get("OrderNumber", "")
+            for line in (order.get("SalesOrderLines") or []):
+                product = line.get("Product", {}) or {}
+                code = product.get("ProductCode", "") or ""
+                veh_cat = product_category(code, base2cat)
+                if veh_cat not in totals["backlog"]:
+                    continue  # Spare Parts / unmapped -- not part of this backlog view
+                qty = float(line.get("OrderQuantity", 0) or 0)
+                if qty <= 0:
+                    continue
+                bucket = totals["backlog"][veh_cat]
+                entry = bucket.setdefault(code, {
+                    "description": product.get("ProductDescription", "") or "",
+                    "qty": 0.0,
+                    "oldest_date": order_date,
+                    "orders": set(),
+                })
+                entry["qty"] += qty
+                entry["orders"].add(order_num)
+                if order_date and (not entry["oldest_date"] or order_date < entry["oldest_date"]):
+                    entry["oldest_date"] = order_date
+
         for order in self.fetch_all_orders(fetch_start, end):
             status   = order.get("OrderStatus", "")
             subtotal = float(order.get("SubTotal", 0) or 0)
@@ -300,6 +328,25 @@ class UnleashedClient:
                 totals["o_cats"][cat]   = totals["o_cats"].get(cat, 0) + subtotal
                 totals["cats"][cat]     = totals["cats"].get(cat, 0)   + subtotal
                 _add_product_lines(order, totals["p_o"])
+                _add_backlog_lines(order)
+
+        # Serialize backlog: {category: [ {code, description, qty, oldestDate,
+        # orders}, ... ]}, sorted oldest-order-first within each category so the
+        # longest-outstanding backorders surface at the top.
+        open_backlog = {}
+        for veh_cat, codes in totals["backlog"].items():
+            rows = [
+                {
+                    "code": code,
+                    "description": e["description"],
+                    "qty": int(e["qty"]) if e["qty"] == int(e["qty"]) else round(e["qty"], 2),
+                    "oldestDate": e["oldest_date"] or "",
+                    "orders": len(e["orders"]),
+                }
+                for code, e in codes.items()
+            ]
+            rows.sort(key=lambda r: r["oldestDate"] or "9999-99-99")
+            open_backlog[veh_cat] = rows
 
         return {
             "completed": round(totals["completed"], 2),
@@ -310,6 +357,7 @@ class UnleashedClient:
             "categories_total":     {k: round(v, 2) for k, v in totals["cats"].items()},
             "product_completed":    {k: round(v, 2) for k, v in totals["p_c"].items()},
             "product_open":         {k: round(v, 2) for k, v in totals["p_o"].items()},
+            "open_backlog":         open_backlog,
         }
 
 
@@ -1943,6 +1991,17 @@ def run_pipeline(config_path, dry_run=False):
             "labels": PRODUCT_CATEGORIES,
             "completed": [trade.get("product_completed", {}).get(c, 0) for c in PRODUCT_CATEGORIES],
             "open": [trade.get("product_open", {}).get(c, 0) for c in PRODUCT_CATEGORIES],
+        },
+        # Open-order backlog by product code (Boat / Caravan & Camper / Jet Ski),
+        # however old -- sorted oldest-first so the longest-outstanding items
+        # surface first. "age" is days since the order was placed, as of today.
+        "openBacklog": {
+            veh_cat: [
+                {**row, "age": (now.date() - datetime.strptime(row["oldestDate"], "%Y-%m-%d").date()).days
+                        if row["oldestDate"] else None}
+                for row in rows
+            ]
+            for veh_cat, rows in trade.get("open_backlog", {}).items()
         },
         "stores": [{
             "name": s["name"], "target": s["target"], "achieved": s["achieved"],
