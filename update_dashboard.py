@@ -203,10 +203,11 @@ class UnleashedClient:
                     and complete later; median lag ~4 days, observed up to ~4.7
                     months in historical data).
 
-        Open      : Status not in ('Completed', 'Deleted') -- i.e. all currently
-                    parked/open orders, with no date filter (include_prev_open is
-                    accepted for backward compatibility but no longer changes
-                    this behaviour).
+        Open      : Status not in ('Completed', 'Deleted')  AND  RequiredDate in
+                    the current month or the month before (include_prev_open=True),
+                    or the current month only (include_prev_open=False). Orders
+                    required further in the future don't count as "open pipeline"
+                    yet -- they're upcoming, not due.
 
         A 6-month OrderDate look-back window is fetched so orders placed earlier
         but completed within the target month are correctly captured.
@@ -216,11 +217,11 @@ class UnleashedClient:
         end   = f"{year}-{month + 1:02d}-01" if month < 12 else f"{year + 1}-01-01"
 
         # ── Open-orders RequiredDate lower bound ─────────────────────────────────
-        # include_prev_open -> current month + 2 previous months
+        # include_prev_open -> current month + 1 previous month
         # otherwise         -> current month only
         if include_prev_open:
-            prev_m = month - 2 if month > 2 else month + 10
-            prev_y = year      if month > 2 else year - 1
+            prev_m = month - 1 if month > 1 else 12
+            prev_y = year      if month > 1 else year - 1
             open_start = f"{prev_y}-{prev_m:02d}-01"
         else:
             open_start = start
@@ -327,12 +328,23 @@ class UnleashedClient:
                     _add_product_lines(order, totals["p_c"])
 
             elif status != "Deleted":
-                # ── Open pipeline = ALL currently-parked/open orders (no date
-                #    filter), SubTotal (GST-exclusive). ──
-                totals["open"]         += subtotal
-                totals["o_cats"][cat]   = totals["o_cats"].get(cat, 0) + subtotal
-                totals["cats"][cat]     = totals["cats"].get(cat, 0)   + subtotal
-                _add_product_lines(order, totals["p_o"])
+                # ── Open PIPELINE ($ headline, category/product breakdowns) =
+                #    currently-parked/open orders whose RequiredDate falls in the
+                #    open window (current month, or current + previous month when
+                #    include_prev_open=True). Orders required further out aren't
+                #    due yet. SubTotal (ex-GST).
+                req_date = self._parse_date(order.get("RequiredDate", ""))
+                if req_date and open_start <= req_date < end:
+                    totals["open"]         += subtotal
+                    totals["o_cats"][cat]   = totals["o_cats"].get(cat, 0) + subtotal
+                    totals["cats"][cat]     = totals["cats"].get(cat, 0)   + subtotal
+                    _add_product_lines(order, totals["p_o"])
+
+                # ── Open order BACKLOG (product-by-product table) intentionally
+                #    ignores the RequiredDate window above -- it's meant to surface
+                #    every currently open order "however old", including ones due
+                #    further in the future, not just what counts toward this
+                #    month's Open Pipeline $ figure. ──
                 _add_backlog_lines(order)
 
         # Serialize backlog: {category: [ {code, description, qty, requiredDate,
