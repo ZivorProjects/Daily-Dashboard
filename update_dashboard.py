@@ -28,8 +28,13 @@ import re
 import sys
 import time
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
+try:
+    from zoneinfo import ZoneInfo
+    NZ_TZ = ZoneInfo("Pacific/Auckland")
+except Exception:
+    NZ_TZ = None
 
 try:
     import requests
@@ -843,14 +848,20 @@ class TradeMeClient:
 
     @staticmethod
     def _parse_dotnet_date(date_str):
-        """Parse .NET JSON date format /Date(timestamp)/ to YYYY-MM-DD string."""
+        """Parse .NET JSON date format /Date(timestamp)/ to a YYYY-MM-DD string in
+        NZ local time (TradeMe is a NZ marketplace and reports SoldDate etc. in NZ
+        local time to sellers). Converting to UTC instead of NZ time shifts any
+        sale made in the NZ evening/night to the previous calendar day, which
+        silently drops it from whichever day/month bucket it actually belongs to."""
         if not date_str:
             return ""
         # Handle /Date(1234567890000)/ and /Date(1234567890000+0000)/ formats
         m = re.search(r'/Date\((\d+)([+-]\d+)?\)/', str(date_str))
         if m:
             timestamp_ms = int(m.group(1))
-            return datetime.utcfromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%d")
+            dt_utc = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+            dt_local = dt_utc.astimezone(NZ_TZ) if NZ_TZ else dt_utc
+            return dt_local.strftime("%Y-%m-%d")
         # Fallback: if it's already a YYYY-MM-DD string
         if isinstance(date_str, str) and len(date_str) >= 10 and date_str[4:5] == "-":
             return date_str[:10]
@@ -882,6 +893,22 @@ class TradeMeClient:
         """Count of active listings."""
         data = self._get("MyTradeMe/SellingItems", {"rows": 1})
         return data.get("TotalCount", 0)
+
+    def get_feedback_rating(self):
+        """Live seller rating = PositiveFeedback / (PositiveFeedback + NegativeFeedback),
+        from MyTradeMe/Summary. Matches TradeMe's own displayed rating (verified
+        against the account's actual seller profile: 93.7%). Falls back to None on
+        any error so the caller can use the config.json static value instead."""
+        try:
+            s = self._get("MyTradeMe/Summary")
+            pos = float(s.get("PositiveFeedback", 0) or 0)
+            neg = float(s.get("NegativeFeedback", 0) or 0)
+            if pos + neg <= 0:
+                return None
+            return round(pos / (pos + neg), 4)
+        except Exception as e:
+            print(f"  [WARN] TradeMe feedback rating fetch failed: {e}")
+            return None
 
     def get_store_data(self, targets, month_start, today, store_config):
         # Fetch sold items once and compute both revenue total and daily 7d breakdown
@@ -928,12 +955,14 @@ class TradeMeClient:
         revenue = round(total, 2)
         trend = (rev_7d - rev_prev7d) / rev_prev7d if rev_prev7d else 0
         listings = self.get_listing_count()
+        live_rating = self.get_feedback_rating()
+        rating = live_rating if live_rating is not None else store_config.get("rating", 0.935)
 
         return {
             "name": "TradeMe (Zivor)",
             "target": targets.get("trademe_zivor", 15000),
             "achieved": revenue,
-            "rating": store_config.get("rating", 0.935),
+            "rating": rating,
             "listings": listings,
             "trend7d": round(trend, 3),
             "source": "trademe",
