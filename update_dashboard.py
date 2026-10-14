@@ -867,27 +867,32 @@ class TradeMeClient:
             return date_str[:10]
         return ""
 
-    def get_sales_total(self, month_start, today):
-        """Sum revenue from sold items within the date range."""
-        total = 0
-        page = 1
-        while True:
-            data = self.get_sold_items(page)
-            items = data.get("List", [])
-            if not items:
+    def get_all_sold_items(self, page_size=100, max_pages=20):
+        """Fetch every page of MyTradeMe/SoldItems (the endpoint only returns roughly
+        the last 45 days of sales). The response never sets HasNext, so paging is
+        driven by the page filling up: stop on an empty or short page, or when a
+        page adds nothing new (guards against an API that repeats a page)."""
+        items, seen = [], set()
+        for page in range(1, max_pages + 1):
+            batch = self.get_sold_items(page).get("List", [])
+            fresh = [i for i in batch if i.get("PurchaseId") not in seen]
+            seen.update(i.get("PurchaseId") for i in fresh)
+            items.extend(fresh)
+            if len(batch) < page_size or not fresh:
                 break
-            for item in items:
-                sold_date = self._parse_dotnet_date(item.get("SoldDate", ""))
-                if sold_date and month_start <= sold_date <= today:
-                    gross = float(item.get("SelectedBuyNowPrice", 0) or item.get("MaxBidAmount", 0) or 0)
-                    qty = int(item.get("QuantitySold", 1) or 1)
-                    # Divide by 1.1 to remove 10% GST and get ex-tax amount
-                    total += round(gross / 1.1, 2) * qty
-            if not data.get("HasNext", False):
-                break
-            page += 1
             time.sleep(0.5)
-        return round(total, 2)
+        return items
+
+    @staticmethod
+    def _sale_value_nzd(item):
+        """Order total for a sold item in NZD, as TradeMe/Tradevine report it. The sold
+        price carries no tax, so it is used as-is (no GST removal). TotalSalePrice is
+        already price x quantity; fall back to per-unit price x quantity if absent."""
+        total = item.get("TotalSalePrice") or item.get("SubtotalPrice")
+        if total:
+            return float(total)
+        unit = float(item.get("SelectedBuyNowPrice", 0) or item.get("MaxBidAmount", 0) or 0)
+        return unit * int(item.get("QuantitySold", 1) or 1)
 
     def get_listing_count(self):
         """Count of active listings."""
@@ -915,10 +920,8 @@ class TradeMeClient:
         seven_days_ago = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         prev_week = (datetime.strptime(seven_days_ago, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
 
-        # TradeMe reports in NZD. Convert to AUD first, then remove the same 10%
-        # GST fraction applied to every other channel (per business direction: do
-        # NOT adjust for NZ's actual 15% GST rate -- just convert currency and
-        # keep the existing /1.1 so all channels use one consistent ex-tax basis).
+        # TradeMe reports in NZD and the sold price carries no tax, so the order total
+        # is used as-is (no GST removal) -- the only adjustment is NZD -> AUD.
         fx_rate = get_nzd_to_aud_rate()
 
         total = 0
@@ -926,31 +929,18 @@ class TradeMeClient:
         rev_prev7d = 0
         daily7d = {}
 
-        page = 1
-        while True:
-            data = self.get_sold_items(page)
-            items = data.get("List", [])
-            if not items:
-                break
-            for item in items:
-                sold_date = self._parse_dotnet_date(item.get("SoldDate", ""))
-                if not sold_date:
-                    continue
-                gross_nzd = float(item.get("SelectedBuyNowPrice", 0) or item.get("MaxBidAmount", 0) or 0)
-                gross = gross_nzd * fx_rate
-                qty = int(item.get("QuantitySold", 1) or 1)
-                subtotal = round(gross / 1.1, 2) * qty
-                if month_start <= sold_date <= today:
-                    total += subtotal
-                if sold_date >= seven_days_ago and sold_date <= today:
-                    rev_7d += subtotal
-                    daily7d[sold_date] = daily7d.get(sold_date, 0) + subtotal
-                elif sold_date >= prev_week and sold_date < seven_days_ago:
-                    rev_prev7d += subtotal
-            if not data.get("HasNext", False):
-                break
-            page += 1
-            time.sleep(0.5)
+        for item in self.get_all_sold_items():
+            sold_date = self._parse_dotnet_date(item.get("SoldDate", ""))
+            if not sold_date:
+                continue
+            subtotal = self._sale_value_nzd(item) * fx_rate
+            if month_start <= sold_date <= today:
+                total += subtotal
+            if sold_date >= seven_days_ago and sold_date <= today:
+                rev_7d += subtotal
+                daily7d[sold_date] = daily7d.get(sold_date, 0) + subtotal
+            elif sold_date >= prev_week and sold_date < seven_days_ago:
+                rev_prev7d += subtotal
 
         revenue = round(total, 2)
         trend = (rev_7d - rev_prev7d) / rev_prev7d if rev_prev7d else 0
@@ -1681,9 +1671,11 @@ def run_pipeline(config_path, dry_run=False):
     today = now.strftime("%Y-%m-%d")
     month_start = now.strftime("%Y-%m-01")
     # Retail stores (Zivor, AMS, ATS, TradeMe) use last 31 days ending T-1 (yesterday)
-    # T-1 avoids partial-day data from today skewing the rolling 31-day window
+    # T-1 avoids partial-day data from today skewing the rolling 31-day window.
+    # Both ends are inclusive, so start = T-1 minus 30 days gives exactly 31 days
+    # (it was T-1 minus 31, which silently summed 32 days under a "31 days" label).
     retail_end = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-    retail_start = (now - timedelta(days=32)).strftime("%Y-%m-%d")
+    retail_start = (now - timedelta(days=31)).strftime("%Y-%m-%d")
     targets = cfg.get("targets", {})
 
     print(f"[INFO] Running dashboard pipeline -- {now.strftime('%d %b %Y, %I:%M %p')}")
