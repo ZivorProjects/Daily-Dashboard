@@ -885,14 +885,25 @@ class TradeMeClient:
 
     @staticmethod
     def _sale_value_nzd(item):
-        """Order total for a sold item in NZD, as TradeMe/Tradevine report it. The sold
-        price carries no tax, so it is used as-is (no GST removal). TotalSalePrice is
-        already price x quantity; fall back to per-unit price x quantity if absent."""
+        """Net order value for a sold item in NZD. The sold price carries no tax, so it
+        is used as-is (no GST removal). TotalSalePrice is already price x quantity; fall
+        back to per-unit price x quantity if absent.
+
+        Cancelled orders stay in SoldItems with no status flag -- they are refunded
+        through TradeMe, which records the refund in PaymentDetails.RefundCollection.
+        The refund Amount includes GST (TaxSubTotal), so the ex-tax refunded amount is
+        deducted: a fully refunded (cancelled) sale nets to nil, a partial refund only
+        reduces it. The value stays on the original sale date, as for other channels."""
         total = item.get("TotalSalePrice") or item.get("SubtotalPrice")
         if total:
-            return float(total)
-        unit = float(item.get("SelectedBuyNowPrice", 0) or item.get("MaxBidAmount", 0) or 0)
-        return unit * int(item.get("QuantitySold", 1) or 1)
+            value = float(total)
+        else:
+            unit = float(item.get("SelectedBuyNowPrice", 0) or item.get("MaxBidAmount", 0) or 0)
+            value = unit * int(item.get("QuantitySold", 1) or 1)
+        refunds = (item.get("PaymentDetails") or {}).get("RefundCollection") or []
+        refunded_ex_tax = sum(float(r.get("Amount", 0) or 0) - float(r.get("TaxSubTotal", 0) or 0)
+                              for r in refunds)
+        return max(round(value - refunded_ex_tax, 2), 0.0) or 0.0  # "or" turns -0.0 into 0.0
 
     def get_listing_count(self):
         """Count of active listings."""
