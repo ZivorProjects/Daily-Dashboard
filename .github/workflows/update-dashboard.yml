@@ -57,6 +57,36 @@ jobs:
           echo "$CONFIG_JSON_B64" | base64 --decode > config.json
           echo "config.json written ($(wc -c < config.json) bytes)"
 
+      # Extra config (e.g. a newly added store's Shopify/eBay credentials) lives in its own
+      # secret and is deep-merged over config.json, so the main CONFIG_JSON_B64 secret never
+      # has to be re-encoded. Optional: skipped when the secret is not set.
+      - name: Merge optional extra config (EXTRA_CONFIG_JSON_B64)
+        env:
+          EXTRA_CONFIG_JSON_B64: ${{ secrets.EXTRA_CONFIG_JSON_B64 }}
+        run: |
+          if [ -z "$EXTRA_CONFIG_JSON_B64" ]; then
+            echo "No EXTRA_CONFIG_JSON_B64 secret set -- using config.json as-is"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import base64, json, os
+
+          def deep_merge(base, extra):
+              for k, v in extra.items():
+                  if isinstance(v, dict) and isinstance(base.get(k), dict):
+                      deep_merge(base[k], v)
+                  else:
+                      base[k] = v
+
+          with open("config.json", encoding="utf-8") as f:
+              cfg = json.load(f)
+          extra = json.loads(base64.b64decode(os.environ["EXTRA_CONFIG_JSON_B64"]).decode("utf-8"))
+          deep_merge(cfg, extra)
+          with open("config.json", "w", encoding="utf-8") as f:
+              json.dump(cfg, f, indent=2, ensure_ascii=False)
+          print("Merged extra config sections:", ", ".join(sorted(extra)))
+          PY
+
       # ── Node / wrangler with npm cache ───────────────────────────────────
       - name: Set up Node.js 24
         uses: actions/setup-node@v4
@@ -80,6 +110,7 @@ jobs:
           EBAY_OAUTH_REFRESH_ZIVOR: ${{ secrets.EBAY_OAUTH_REFRESH_ZIVOR }}
           EBAY_OAUTH_REFRESH_AMS:   ${{ secrets.EBAY_OAUTH_REFRESH_AMS }}
           EBAY_OAUTH_REFRESH_ATS:   ${{ secrets.EBAY_OAUTH_REFRESH_ATS }}
+          EBAY_OAUTH_REFRESH_AOC:   ${{ secrets.EBAY_OAUTH_REFRESH_AOC }}
         run: python -u update_dashboard.py
 
       - name: Take hero snapshot (D-Flector + Retail cards only)

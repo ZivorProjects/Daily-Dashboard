@@ -608,8 +608,17 @@ class NetoClient:
 
 
 # ─────────────────────────────────────────────
-#  3. SHOPIFY API  (AMS + ATS Stores)
+#  3. SHOPIFY API  (AMS + ATS + AOC Stores)
 # ─────────────────────────────────────────────
+
+# Shopify brands, in dashboard display order: (config key under "shopify", display name).
+# A brand is skipped until config.json has its shop_url + access_token.
+SHOPIFY_BRANDS = [("ams", "AMS"), ("ats", "ATS"), ("aoc", "AOC")]
+
+# eBay seller accounts whose live metrics are fetched (keys under config ebay.stores).
+# The matching GitHub secret is EBAY_OAUTH_REFRESH_<KEY>; a key with no access_token
+# configured is skipped.
+EBAY_STORE_KEYS = ["zivor", "ams", "ats", "aoc"]
 
 class ShopifyClient:
     """Connects to Shopify Admin REST API.
@@ -621,8 +630,9 @@ class ShopifyClient:
         self.access_token = access_token
         self.api_key = api_key  # needed for private app basic auth
 
-    def _get(self, endpoint, params=None):
-        url = f"{self.shop_url}/admin/api/2024-01/{endpoint}.json"
+    def _request(self, url, params=None):
+        """GET a full URL and return the Response (callers that need headers, e.g.
+        the pagination Link header, use this; _get() wraps it for plain JSON)."""
         # Try Custom App header auth first, fall back to Private App basic auth
         if self.access_token.startswith("shpat_"):
             r = requests.get(url, headers={
@@ -641,11 +651,15 @@ class ShopifyClient:
                 "Content-Type": "application/json",
             }, params=params, timeout=30)
         r.raise_for_status()
-        return r.json()
+        return r
 
-    def get_orders(self, start_date, end_date, status="any"):
-        """Fetch all orders within date range, handling pagination."""
-        all_orders = []
+    def _get(self, endpoint, params=None):
+        return self._request(f"{self.shop_url}/admin/api/2024-01/{endpoint}.json", params).json()
+
+    def get_orders(self, start_date, end_date, status="any", max_pages=40):
+        """Fetch all orders within date range, following Shopify's cursor pagination.
+        Shopify caps a page at 250 orders and signals more via the Link header
+        (rel="next"); without following it, a busy store silently under-counts."""
         params = {
             "created_at_min": f"{start_date}T00:00:00+10:00",
             "created_at_max": f"{end_date}T23:59:59+10:00",
@@ -653,9 +667,15 @@ class ShopifyClient:
             "limit": 250,
             "fields": "id,total_price,subtotal_price,financial_status,source_name,created_at,tags,cancelled_at",
         }
-        data = self._get("orders", params)
-        all_orders.extend(data.get("orders", []))
-        # Note: for >250 orders, implement link-header pagination
+        r = self._request(f"{self.shop_url}/admin/api/2024-01/orders.json", params)
+        all_orders = list(r.json().get("orders", []))
+        for _ in range(max_pages - 1):
+            next_url = (r.links.get("next") or {}).get("url")
+            if not next_url:
+                break
+            time.sleep(0.5)  # Shopify REST allows ~2 requests/second
+            r = self._request(next_url)  # the cursor URL carries its own parameters
+            all_orders.extend(r.json().get("orders", []))
         return all_orders
 
     def get_product_count(self):
@@ -663,7 +683,24 @@ class ShopifyClient:
         return data.get("count", 0)
 
     def get_store_data(self, brand, targets, month_start, today, store_config):
-        """Build store data for both eBay and Web channels of this Shopify store."""
+        """Build store data for the eBay and/or Web channels of this Shopify store.
+
+        store_config["channels"] (default ["ebay", "web"]) lists the channels the brand
+        sells on. An eBay-only brand (e.g. ["ebay"]) gets a single eBay card and every
+        non-cancelled order is attributed to eBay, since there is no web channel for
+        the remainder to belong to."""
+        channels = store_config.get("channels") or ["ebay", "web"]
+        has_ebay = "ebay" in channels
+        has_web = "web" in channels
+
+        def _is_ebay(o):
+            if not has_web:
+                return True
+            # Shopify marks eBay channel orders with source_name or tags
+            source = (o.get("source_name", "") or "").lower()
+            tags = (o.get("tags", "") or "").lower()
+            return "ebay" in source or "ebay" in tags
+
         orders = self.get_orders(month_start, today)
 
         ebay_revenue = 0
@@ -678,11 +715,8 @@ class ShopifyClient:
             # AU Shopify stores are tax-inclusive, so subtotal_price INCLUDES GST.
             # Divide by 1.1 for ex-GST, consistent with Neto/TradeMe.
             subtotal = float(o.get("subtotal_price", 0)) / 1.1  # ex-GST (AU Shopify prices are GST-inclusive)
-            source = (o.get("source_name", "") or "").lower()
-            tags = (o.get("tags", "") or "").lower()
 
-            # Shopify marks eBay channel orders with source_name or tags
-            if "ebay" in source or "ebay" in tags:
+            if _is_ebay(o):
                 ebay_revenue += subtotal
             else:
                 web_revenue += subtotal
@@ -699,10 +733,8 @@ class ShopifyClient:
             if o.get("cancelled_at"):
                 continue
             subtotal = float(o.get("subtotal_price", 0)) / 1.1  # ex-GST (AU Shopify prices are GST-inclusive)
-            source = (o.get("source_name", "") or "").lower()
-            tags = (o.get("tags", "") or "").lower()
             created = o.get("created_at", "")[:10]
-            is_ebay = "ebay" in source or "ebay" in tags
+            is_ebay = _is_ebay(o)
 
             if created >= week_ago:
                 if is_ebay:
@@ -717,7 +749,7 @@ class ShopifyClient:
 
         ebay_trend = (ebay_7d - ebay_prev7d) / ebay_prev7d if ebay_prev7d else 0
         web_trend = (web_7d - web_prev7d) / web_prev7d if web_prev7d else 0
-        products = self.get_product_count()
+        products = self.get_product_count() if has_web else 0  # only the Web card shows it
 
         # Daily 7d breakdown for Combined Retail mini chart
         # Shopify returns created_at in UTC; convert to AEST (UTC+10) so the date
@@ -739,9 +771,7 @@ class ShopifyClient:
             if not created or created < seven_days_ago or created > today:
                 continue
             subtotal = float(o.get("subtotal_price", 0)) / 1.1  # ex-GST (AU Shopify prices are GST-inclusive)
-            source = (o.get("source_name", "") or "").lower()
-            tags = (o.get("tags", "") or "").lower()
-            if "ebay" in source or "ebay" in tags:
+            if _is_ebay(o):
                 ebay_daily7d[created] = ebay_daily7d.get(created, 0) + subtotal
             else:
                 web_daily7d[created] = web_daily7d.get(created, 0) + subtotal
@@ -749,8 +779,9 @@ class ShopifyClient:
         ebay_key = f"{brand.lower()}_ebay"
         web_key = f"{brand.lower()}_web"
 
-        return [
-            {
+        cards = []
+        if has_ebay:
+            cards.append({
                 "name": f"{brand} (eBay)",
                 "target": targets.get(ebay_key, 15000),
                 "achieved": round(ebay_revenue, 2),
@@ -759,8 +790,9 @@ class ShopifyClient:
                 "trend7d": round(ebay_trend, 3),
                 "source": "shopify",
                 "daily7d": ebay_daily7d,
-            },
-            {
+            })
+        if has_web:
+            cards.append({
                 "name": f"{brand} (Web)",
                 "target": targets.get(web_key, 5000),
                 "achieved": round(web_revenue, 2),
@@ -769,8 +801,8 @@ class ShopifyClient:
                 "trend7d": round(web_trend, 3),
                 "source": "shopify",
                 "daily7d": web_daily7d,
-            },
-        ]
+            })
+        return cards
 
 
 # ─────────────────────────────────────────────
@@ -1748,9 +1780,9 @@ def run_pipeline(config_path, dry_run=False):
              "trend7d": 0, "source": "neto"},
         ])
 
-    # ── 3. Shopify (AMS + ATS) ──
-    print("\n[3/4] Fetching Shopify data (AMS + ATS)...")
-    for brand_key, brand_name in [("ams", "AMS"), ("ats", "ATS")]:
+    # ── 3. Shopify (AMS + ATS + AOC) ──
+    print("\n[3/4] Fetching Shopify data (AMS + ATS + AOC)...")
+    for brand_key, brand_name in SHOPIFY_BRANDS:
         scfg = cfg.get("shopify", {}).get(brand_key, {})
         if not scfg.get("shop_url") or "YOUR_" in scfg.get("access_token", "YOUR_"):
             print(f"  [SKIP] {brand_name} -- not configured")
@@ -1767,17 +1799,20 @@ def run_pipeline(config_path, dry_run=False):
                 print(f"  [HINT] The token for {brand_name} may be a Private App password.")
                 print(f"         Add 'api_key' to config.json under shopify.{brand_key},")
                 print(f"         OR create a Custom App in Shopify admin to get a shpat_ token.")
-            # Add placeholders
+            # Add placeholders (only for the channels this brand actually sells on)
             ebay_key = f"{brand_name.lower()}_ebay"
             web_key = f"{brand_name.lower()}_web"
-            stores_data.extend([
-                {"name": f"{brand_name} (eBay)", "target": targets.get(ebay_key, 15000), "achieved": 0,
-                 "rating": scfg.get("ebay_rating", 1.0), "listings": scfg.get("ebay_listings", 0),
-                 "trend7d": 0, "source": "shopify"},
-                {"name": f"{brand_name} (Web)", "target": targets.get(web_key, 5000), "achieved": 0,
-                 "rating": scfg.get("web_rating", 5.0), "listings": 0,
-                 "trend7d": 0, "source": "shopify"},
-            ])
+            _channels = scfg.get("channels") or ["ebay", "web"]
+            if "ebay" in _channels:
+                stores_data.append(
+                    {"name": f"{brand_name} (eBay)", "target": targets.get(ebay_key, 15000), "achieved": 0,
+                     "rating": scfg.get("ebay_rating", 1.0), "listings": scfg.get("ebay_listings", 0),
+                     "trend7d": 0, "source": "shopify"})
+            if "web" in _channels:
+                stores_data.append(
+                    {"name": f"{brand_name} (Web)", "target": targets.get(web_key, 5000), "achieved": 0,
+                     "rating": scfg.get("web_rating", 5.0), "listings": 0,
+                     "trend7d": 0, "source": "shopify"})
         except Exception as e:
             print(f"  [ERROR] {brand_name} Shopify failed: {e}")
         time.sleep(0.3)
@@ -1812,7 +1847,7 @@ def run_pipeline(config_path, dry_run=False):
         print("\n[4.5] Fetching eBay live metrics (feedback, listings, performance)...")
         listings_cache_dict = ecfg.get("listings_cache", {})
 
-        for store_key in ["zivor", "ams", "ats"]:
+        for store_key in EBAY_STORE_KEYS:
             store_cfg = stores_cfg.get(store_key, {})
             if not store_cfg.get("access_token"):
                 continue
@@ -1902,11 +1937,7 @@ def run_pipeline(config_path, dry_run=False):
                 print(f"    INAD: {metrics['inad_rate']}% ({metrics['inad_rating']})  |  INR: {metrics['inr_rate']}% ({metrics['inr_rating']})")
 
                 # Patch the store card with live rating + listing count
-                store_display_name = {
-                    "zivor": "Zivor (eBay)",
-                    "ams": "AMS (eBay)",
-                    "ats": "ATS (eBay)",
-                }.get(store_key)
+                store_display_name = f"{store_key.upper() if store_key != 'zivor' else 'Zivor'} (eBay)"
 
                 for s in stores_data:
                     if s["name"] == store_display_name:

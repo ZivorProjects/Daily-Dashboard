@@ -1264,7 +1264,10 @@ function renderEbayPerformance() {
       </div>`;
   }
 
-  const storeNames = ['Zivor', 'AMS', 'ATS'];
+  // One section per eBay account the pipeline reports (Zivor, AMS, ATS, AOC, ...), in the
+  // pipeline's order. Falls back to the original three if serviceMetrics is empty.
+  const storeNames = (DASHBOARD_DATA.serviceMetrics || []).map(m => m.store);
+  if (!storeNames.length) storeNames.push('Zivor', 'AMS', 'ATS');
   let html = '';
   for (const name of storeNames) {
     const s = (DASHBOARD_DATA.serviceMetrics || []).find(m => m.store === name);
