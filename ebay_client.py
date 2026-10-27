@@ -568,12 +568,14 @@ class eBayClient:
     # ── Sell Analytics API — OAuth tokens, live seller standards ────────────
 
     @staticmethod
-    def refresh_oauth_access_token(app_id: str, cert_id: str, refresh_token: str) -> str:
+    def refresh_oauth_access_token(app_id: str, cert_id: str, refresh_token: str,
+                                   scope: str = "https://api.ebay.com/oauth/api_scope/sell.analytics.readonly") -> str:
         """Exchange an OAuth refresh token for a new short-lived access token.
 
         Called at the start of each GitHub Actions run. The pipeline stores only
         the long-lived refresh token (18-month expiry) in GitHub Secrets; access
-        tokens (2-hour expiry) are obtained fresh on every run.
+        tokens (2-hour expiry) are obtained fresh on every run. `scope` must be one
+        the refresh token was originally granted (default: Sell Analytics).
         """
         import base64 as _b64
         credentials = _b64.b64encode(f"{app_id}:{cert_id}".encode()).decode()
@@ -586,7 +588,7 @@ class eBayClient:
             data={
                 "grant_type":    "refresh_token",
                 "refresh_token": refresh_token,
-                "scope":         "https://api.ebay.com/oauth/api_scope/sell.analytics.readonly",
+                "scope":         scope,
             },
             timeout=30,
         )

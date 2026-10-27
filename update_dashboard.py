@@ -35,6 +35,10 @@ try:
     NZ_TZ = ZoneInfo("Pacific/Auckland")
 except Exception:
     NZ_TZ = None
+try:
+    AU_TZ = ZoneInfo("Australia/Melbourne")
+except Exception:
+    AU_TZ = None  # no tz database (e.g. Windows without tzdata): callers fall back to AEDT +11
 
 try:
     import requests
@@ -613,7 +617,13 @@ class NetoClient:
 
 # Shopify brands, in dashboard display order: (config key under "shopify", display name).
 # A brand is skipped until config.json has its shop_url + access_token.
-SHOPIFY_BRANDS = [("ams", "AMS"), ("ats", "ATS"), ("aoc", "AOC")]
+SHOPIFY_BRANDS = [("ams", "AMS"), ("ats", "ATS")]
+
+# Brands whose sales come straight from the seller's eBay orders (eBay Sell Fulfillment API)
+# instead of Shopify: (key under config ebay.stores, display name). AOC sells only on eBay and
+# its Shopify store could not be linked. Needs GitHub secret EBAY_OAUTH_REFRESH_<KEY> (a
+# refresh token granted sell.fulfillment.readonly) and ebay.stores.<key>.oauth_app_id/_cert_id.
+EBAY_ORDER_STORES = [("aoc", "AOC")]
 
 # eBay seller accounts whose live metrics are fetched (keys under config ebay.stores).
 # The matching GitHub secret is EBAY_OAUTH_REFRESH_<KEY>; a key with no access_token
@@ -803,6 +813,113 @@ class ShopifyClient:
                 "daily7d": web_daily7d,
             })
         return cards
+
+
+# ─────────────────────────────────────────────
+#  3b. EBAY ORDERS  (AOC -- sells only on eBay)
+# ─────────────────────────────────────────────
+
+class EbayOrdersClient:
+    """Sales for a store whose orders exist only on eBay, via the Sell Fulfillment API
+    (OAuth scope sell.fulfillment.readonly)."""
+
+    ORDERS_URL = "https://api.ebay.com/sell/fulfillment/v1/order"
+    SCOPE = "https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly"
+
+    def __init__(self, app_id, cert_id, refresh_token):
+        self.access_token = eBayClient.refresh_oauth_access_token(
+            app_id, cert_id, refresh_token, scope=self.SCOPE)
+
+    @staticmethod
+    def _tz():
+        return AU_TZ or timezone(timedelta(hours=11))
+
+    def _local_date(self, iso_ts):
+        """eBay creationDate is UTC ('2026-10-20T04:55:00.000Z') -> Australian calendar date."""
+        dt_utc = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        return dt_utc.astimezone(self._tz()).strftime("%Y-%m-%d")
+
+    def get_orders(self, start_date, end_date, max_pages=40):
+        """All orders created between two Australian calendar dates (inclusive), following
+        the API's `next` link."""
+        tz = self._tz()
+        lo = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=tz).astimezone(timezone.utc)
+        hi = (datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)).replace(tzinfo=tz).astimezone(timezone.utc)
+        url = self.ORDERS_URL
+        params = {
+            "filter": f"creationdate:[{lo:%Y-%m-%dT%H:%M:%S}.000Z..{hi:%Y-%m-%dT%H:%M:%S}.000Z]",
+            "limit": 200,
+        }
+        orders = []
+        for _ in range(max_pages):
+            r = requests.get(url, params=params,
+                             headers={"Authorization": f"Bearer {self.access_token}"}, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            orders.extend(data.get("orders", []))
+            url, params = data.get("next"), None  # the next link carries its own parameters
+            if not url:
+                break
+            time.sleep(0.3)
+        return orders
+
+    @staticmethod
+    def _money(amount):
+        try:
+            return float((amount or {}).get("value", 0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _order_value(self, o):
+        """GST-inclusive item value (postage excluded) of an order that still counts as a sale.
+        Cancelled and fully refunded orders are 0; a partially refunded order is netted of its
+        refunds."""
+        if (o.get("cancelStatus") or {}).get("cancelState") == "CANCELED":
+            return 0.0
+        status = o.get("orderPaymentStatus")
+        if status == "FULLY_REFUNDED":
+            return 0.0
+        ps = o.get("pricingSummary") or {}
+        value = self._money(ps.get("total")) - self._money(ps.get("deliveryCost"))
+        if status == "PARTIALLY_REFUNDED":
+            value -= sum(self._money(r.get("amount"))
+                         for r in (o.get("paymentSummary") or {}).get("refunds", []))
+        return max(value, 0.0)
+
+    def get_store_data(self, brand, targets, start_date, end_date, store_config):
+        """Single '<brand> (eBay)' card. eBay prices on AU listings are GST-inclusive and
+        orders carry no separate tax, so ex-GST = value / 1.1 (same as the Shopify stores).
+        Rating/listings are patched in later from the live eBay metrics."""
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+        orders = self.get_orders(start_date, end_date)
+
+        daily = {}
+        for o in orders:
+            day = self._local_date(o.get("creationDate", ""))
+            if not (start_date <= day <= end_date):
+                continue
+            daily[day] = daily.get(day, 0.0) + self._order_value(o) / 1.1
+
+        achieved = sum(daily.values())
+        last7_days = {(end - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(0, 7)}
+        prev7_days = {(end - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7, 14)}
+        last7 = sum(v for d, v in daily.items() if d in last7_days)
+        prev7 = sum(v for d, v in daily.items() if d in prev7_days)
+        trend = (last7 - prev7) / prev7 if prev7 else 0
+
+        seven_days_ago = (end - timedelta(days=7)).strftime("%Y-%m-%d")
+        return [{
+            "name": f"{brand} (eBay)",
+            "target": targets.get(f"{brand.lower()}_ebay", 20000),
+            "achieved": round(achieved, 2),
+            "rating": store_config.get("ebay_rating", 1.0),
+            "listings": store_config.get("ebay_listings", 0),
+            "trend7d": round(trend, 3),
+            # AOC is a Shopify-based brand, so it stays in the "shopify" bucket: the hero
+            # breakdown, 7-day chart and card chip then need no new platform category.
+            "source": "shopify",
+            "daily7d": {d: round(v, 2) for d, v in daily.items() if d >= seven_days_ago},
+        }]
 
 
 # ─────────────────────────────────────────────
@@ -1094,7 +1211,7 @@ def generate_hero_image(trade, stores_data, now, targets, output_path):
         f"{retail_pct:.0%}  of  ${total_retail_target:,.0f}  target",
         [
             f"Neto (Zivor):         ${neto_total:,.0f}",
-            f"Shopify (AMS+ATS): ${shopify_total:,.0f}",
+            f"Shopify (AMS+ATS+AOC): ${shopify_total:,.0f}",
             f"TradeMe (NZ):       ${trademe_total:,.0f}",
         ]
     )
@@ -1817,6 +1934,31 @@ def run_pipeline(config_path, dry_run=False):
             print(f"  [ERROR] {brand_name} Shopify failed: {e}")
         time.sleep(0.3)
 
+    # ── 3b. eBay-direct stores (AOC) ──
+    print("\n[3b/4] Fetching eBay order data (AOC)...")
+    _ebay_cfg = cfg.get("ebay", {})
+    for store_key, brand_name in EBAY_ORDER_STORES:
+        ocfg = _ebay_cfg.get("stores", {}).get(store_key, {})
+        # GitHub Actions supplies the refresh token as a secret; a local run can use config.json
+        refresh_token = os.environ.get(f"EBAY_OAUTH_REFRESH_{store_key.upper()}", "") or ocfg.get("refresh_token", "")
+        app_id = ocfg.get("oauth_app_id") or _ebay_cfg.get("app_id")
+        cert_id = ocfg.get("oauth_cert_id") or _ebay_cfg.get("cert_id")
+        if not (_EBAY_CLIENT_AVAILABLE and refresh_token and app_id and cert_id):
+            print(f"  [SKIP] {brand_name} -- eBay order access not configured")
+            continue
+        try:
+            orders_client = EbayOrdersClient(app_id, cert_id, refresh_token)
+            brand_stores = orders_client.get_store_data(brand_name, targets, retail_start, retail_end, ocfg)
+            stores_data.extend(brand_stores)
+            for s in brand_stores:
+                print(f"  {s['name']}: ${s['achieved']:,.2f}")
+        except Exception as e:
+            print(f"  [ERROR] {brand_name} eBay orders failed: {e}")
+            stores_data.append(
+                {"name": f"{brand_name} (eBay)", "target": targets.get(f"{brand_name.lower()}_ebay", 20000),
+                 "achieved": 0, "rating": ocfg.get("ebay_rating", 1.0), "listings": ocfg.get("ebay_listings", 0),
+                 "trend7d": 0, "source": "shopify"})
+
     # ── 4. TradeMe ──
     print("\n[4/4] Fetching TradeMe data (Zivor NZ)...")
     tcfg = cfg.get("trademe", {})
@@ -1854,9 +1996,12 @@ def run_pipeline(config_path, dry_run=False):
 
             try:
                 print(f"  [{store_key.upper()}] Fetching metrics...")
+                # A user token only works with the keyset that issued it. Stores whose token
+                # came from their own developer app (AOC) set trading_app_id/trading_cert_id;
+                # everything else keeps using the shared app.
                 ebay_cl = eBayClient(
-                    app_id=ecfg["app_id"],
-                    cert_id=ecfg["cert_id"],
+                    app_id=store_cfg.get("trading_app_id") or ecfg["app_id"],
+                    cert_id=store_cfg.get("trading_cert_id") or ecfg["cert_id"],
                     access_token=store_cfg["access_token"],
                     sandbox_mode=False,
                 )
